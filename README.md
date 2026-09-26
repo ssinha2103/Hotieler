@@ -59,9 +59,10 @@ Useful launcher commands:
 
 ```bash
 ./run.sh --no-open       # start without opening a browser
+./run.sh seed            # create optional local sample data through the public APIs
 ./run.sh status          # show container and health status
 ./run.sh logs            # follow API logs
-./run.sh restart         # reset in-memory state and rebuild
+./run.sh restart         # rebuild and return to an empty in-memory catalog
 ./run.sh test            # run all tests in Docker
 ./run.sh stop            # remove the Compose resources
 ./run.sh help            # show all supported options
@@ -69,33 +70,42 @@ Useful launcher commands:
 
 ## Guided Swagger demo
 
-Compose enables demo seeding by default and starts with one owner, two properties, and
-four room types. The application factory itself remains unseeded unless that runtime flag
-is enabled. No bookings or payments are pre-created, so both approval and rejection
-journeys begin with clean inventory.
+Every normal start is intentionally empty. A fresh clone therefore exposes the real API
+without silently creating owners, properties, bookings, or payments. For a faster local
+walkthrough, start the service and opt in to sample catalog data:
 
-1. Open the **Demo** group and execute `GET /api/v1/demo-data`.
-2. Copy one of the returned query examples into `GET /api/v1/properties/search`.
-3. Use the returned request body with `POST /api/v1/bookings`.
-4. Copy the new booking ID into `POST /api/v1/bookings/{booking_id}/payments`.
-5. Supply the example `Idempotency-Key` header and simulate `APPROVED` or `REJECTED`.
-6. Inspect the authoritative state with `GET /api/v1/bookings/{booking_id}`.
-7. For an approved booking, cancel it and search again to observe released inventory.
+```bash
+./run.sh --no-open
+./run.sh seed
+```
 
-Swagger separates operations into **Demo**, **Owners**, **Properties & Search**,
-**Bookings**, **Payments**, and **Runtime** groups. Request and response examples are
-embedded in the OpenAPI document.
+`seed` is a local convenience command, not a private data-loading endpoint. It creates its
+sample owner and properties by calling the same public `POST /api/v1/owners` and
+`POST /api/v1/owners/{owner_id}/properties` operations that an evaluator uses in Swagger.
+The normal validation, application services, and in-memory repositories are therefore
+exercised; the domain is not bypassed by a special schema or direct repository mutation.
+There is no SQL or database seed because this assessment intentionally uses in-memory
+persistence and contains no database, ORM, or migration layer. In other words,
+`./run.sh seed` is a developer-side API client, not application startup behavior.
 
-Reset all in-memory changes and obtain fresh demo IDs with:
+After seeding, use the identifiers and future dates printed by the command for this flow:
+
+1. Search with `GET /api/v1/properties/search`.
+2. Create a hold with `POST /api/v1/bookings`.
+3. Copy the booking ID into `POST /api/v1/bookings/{booking_id}/payments`.
+4. Supply a unique `Idempotency-Key` header and simulate `APPROVED` or `REJECTED`.
+5. Inspect the authoritative state with `GET /api/v1/bookings/{booking_id}`.
+6. For an approved booking, cancel it and search again to observe released inventory.
+
+Swagger separates operations into **Owners**, **Properties & Search**, **Bookings**,
+**Payments**, and **Runtime** groups. Request and response examples are embedded in the
+OpenAPI document.
+
+Because persistence is in memory, a restart discards both manually created and locally
+seeded records and returns the service to a clean catalog:
 
 ```bash
 ./run.sh restart --no-open
-```
-
-To start with an empty catalog:
-
-```bash
-HOTIELER_SEED_DEMO_DATA=false ./run.sh restart --no-open
 ```
 
 ## Core workflow and invariants
@@ -137,7 +147,6 @@ All business endpoints are versioned under `/api/v1`.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Report application health |
-| `GET` | `/api/v1/demo-data` | Return seeded IDs and ready-to-use demo requests |
 | `POST` | `/api/v1/owners` | Create an owner account |
 | `POST` | `/api/v1/owners/{owner_id}/properties` | Add a property with nested room types |
 | `GET` | `/api/v1/properties/search` | Search room types with live availability |
@@ -202,18 +211,18 @@ Hotieler/
 ├── compose.yaml                # local evaluator runtime and healthcheck
 ├── run.sh                      # Docker-only evaluator launcher
 ├── scripts/
-│   └── docker-smoke.sh         # isolated runtime acceptance gate
+│   ├── docker-smoke.sh         # isolated runtime acceptance gate
+│   └── seed_local_data.py      # opt-in client of the public onboarding APIs
 ├── src/hotieler/
 │   ├── api/                    # HTTP schemas, routes, errors, observability
 │   ├── application/            # use cases, ports, and result models
 │   ├── domain/                 # entities, value objects, policies, specifications
 │   ├── infrastructure/         # repositories, locks, clocks, mock payments
 │   ├── container.py            # explicit dependency composition
-│   ├── demo_data.py            # deterministic Swagger fixture
 │   └── main.py                 # FastAPI application factory
 └── tests/
     ├── unit/                   # domain, service, extension, adapter contracts
-    ├── integration/            # HTTP, OpenAPI, demo, and observability flows
+    ├── integration/            # HTTP, OpenAPI, and observability flows
     └── concurrency/            # inventory, payment, and cancellation races
 ```
 
@@ -235,8 +244,8 @@ make smoke             # isolated container health/OpenAPI/runtime assertions
 ```
 
 Every Python command above runs in a disposable Docker container. `make smoke` additionally
-proves that the built API becomes healthy, serves OpenAPI and demo data, runs as a non-root
-user, and has exactly one Uvicorn process. Barrier-backed concurrency tests cover
+proves that the built API becomes healthy, serves OpenAPI, runs as a non-root user, and has
+exactly one Uvicorn process. Barrier-backed concurrency tests cover
 overselling, same-key payment replay, payment-versus-cancellation races, and inventory
 reuse after rejection or cancellation. `make lock` refreshes the committed `uv.lock`
 inside Docker.
@@ -255,9 +264,10 @@ same result.
 
 ## Intentional limitations and production evolution
 
-State is lost when the container restarts. Docker is used as a reproducible evaluator
-environment, not presented as a production deployment design. The Compose service runs
-exactly one Uvicorn worker because both inventory locks and repositories are process-local.
+State is lost when the container restarts, and startup deliberately does not restore or
+seed it. Docker is used as a reproducible evaluator environment, not presented as a
+production deployment design. The Compose service runs exactly one Uvicorn worker because
+both inventory locks and repositories are process-local.
 
 Payment handling is serialized by idempotency-key and booking locks, but the in-memory
 booking and payment records are written to two repositories without a shared transaction.

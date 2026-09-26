@@ -36,7 +36,6 @@ def test_openapi_schema_exposes_the_complete_public_http_contract() -> None:
 
     expected_operations = {
         "/health": {"get"},
-        "/api/v1/demo-data": {"get"},
         "/api/v1/owners": {"post"},
         "/api/v1/owners/{owner_id}/properties": {"post"},
         "/api/v1/properties/search": {"get"},
@@ -102,7 +101,6 @@ def test_openapi_schema_exposes_the_complete_public_http_contract() -> None:
     }
 
     operations_without_conflicts = (
-        schema["paths"]["/api/v1/demo-data"]["get"],
         schema["paths"]["/api/v1/owners"]["post"],
         schema["paths"]["/api/v1/owners/{owner_id}/properties"]["post"],
         schema["paths"]["/api/v1/properties/search"]["get"],

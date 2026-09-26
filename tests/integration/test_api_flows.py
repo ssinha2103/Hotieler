@@ -100,6 +100,12 @@ def test_health_and_openapi_expose_the_supported_contract() -> None:
     assert expected_paths <= set(schema["paths"])
 
 
+def test_fresh_application_starts_with_an_empty_catalogue() -> None:
+    client = _new_client()
+
+    assert _search(client) == []
+
+
 def test_approved_payment_replay_cancellation_and_inventory_release() -> None:
     client = _new_client()
     property_id, room_type_id = _onboard(client)

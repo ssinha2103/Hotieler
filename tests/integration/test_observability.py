@@ -6,11 +6,14 @@ import json
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi.testclient import TestClient
 
 from hotieler.api.observability import JsonLogFormatter
+from hotieler.container import build_container
+from hotieler.infrastructure.clock import FixedClock
 from hotieler.main import create_app
 
 
@@ -38,14 +41,14 @@ def test_every_response_has_request_id_and_safe_client_id_is_reused() -> None:
     client = TestClient(create_app())
 
     with _capture("hotieler.http") as records:
-        response = client.get("/health", headers={"X-Request-ID": "demo-request_001"})
+        response = client.get("/health", headers={"X-Request-ID": "client-request_001"})
 
     assert response.status_code == 200
-    assert response.headers["X-Request-ID"] == "demo-request_001"
+    assert response.headers["X-Request-ID"] == "client-request_001"
     completed = next(
         record for record in records if record.getMessage() == "http_request_completed"
     )
-    assert completed.request_id == "demo-request_001"  # type: ignore[attr-defined]
+    assert completed.request_id == "client-request_001"  # type: ignore[attr-defined]
     assert completed.http_method == "GET"  # type: ignore[attr-defined]
     assert completed.http_route == "/health"  # type: ignore[attr-defined]
     assert completed.http_status_code == 200  # type: ignore[attr-defined]
@@ -136,11 +139,49 @@ def test_unhandled_exception_returns_safe_envelope_and_is_correlated() -> None:
 
 def test_business_lifecycle_events_are_safe_and_structured() -> None:
     idempotency_key = "never-emit-business-secret"
+    contact_email = "private.owner@aster.example"
+    container = build_container(clock=FixedClock(datetime(2030, 1, 1, 10, tzinfo=UTC)))
 
     with _capture("hotieler.application") as records:
-        client = TestClient(create_app(seed_demo=True))
-        manifest = client.get("/api/v1/demo-data").json()
-        booking_response = client.post("/api/v1/bookings", json=manifest["sample_booking"])
+        client = TestClient(create_app(container))
+        owner_response = client.post(
+            "/api/v1/owners",
+            json={"name": "Aster Stays", "contact_email": contact_email},
+        )
+        assert owner_response.status_code == 201
+        owner_id = owner_response.json()["id"]
+        property_response = client.post(
+            f"/api/v1/owners/{owner_id}/properties",
+            json={
+                "name": "Aster Residency",
+                "city": "Bengaluru",
+                "locality": "Indiranagar",
+                "address": "100 Feet Road",
+                "star_rating": "4.5",
+                "amenities": ["WiFi"],
+                "room_types": [
+                    {
+                        "name": "Deluxe",
+                        "total_units": 1,
+                        "guests_per_unit": 2,
+                        "nightly_rate": {"amount": "2500.00", "currency": "INR"},
+                        "amenities": ["Breakfast"],
+                    }
+                ],
+            },
+        )
+        assert property_response.status_code == 201
+        property_body = property_response.json()
+        booking_response = client.post(
+            "/api/v1/bookings",
+            json={
+                "property_id": property_body["id"],
+                "room_type_id": property_body["room_types"][0]["id"],
+                "check_in": "2030-01-11",
+                "check_out": "2030-01-13",
+                "guest_count": 2,
+            },
+        )
         assert booking_response.status_code == 201
         booking_id = booking_response.json()["id"]
         payment_request = {"method": "CARD", "mock_outcome": "APPROVED"}
@@ -171,4 +212,4 @@ def test_business_lifecycle_events_are_safe_and_structured() -> None:
 
     rendered = "\n".join(JsonLogFormatter().format(record) for record in records)
     assert idempotency_key not in rendered
-    assert "demo.owner@hotieler.example" not in rendered
+    assert contact_email not in rendered

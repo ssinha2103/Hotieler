@@ -2,7 +2,7 @@ UV_IMAGE := ghcr.io/astral-sh/uv:0.8.22-python3.12-bookworm-slim
 COMPOSE := docker compose
 SERVICE := api
 
-.PHONY: install lock build run stop test test-unit test-integration test-concurrency coverage lint typecheck smoke verify
+.PHONY: install lock build run stop seed test test-unit test-integration test-concurrency coverage lint typecheck smoke verify
 
 install: build
 
@@ -23,6 +23,9 @@ run:
 
 stop:
 	$(COMPOSE) down --remove-orphans
+
+seed:
+	./run.sh seed
 
 test: build
 	$(COMPOSE) run --rm --no-deps $(SERVICE) pytest -q

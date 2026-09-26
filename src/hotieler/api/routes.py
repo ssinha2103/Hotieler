@@ -9,11 +9,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Header, Path, Query, Request, status
 
-from hotieler.api.demo_schemas import (
-    DemoDataResponse,
-    demo_data_response,
-    disabled_demo_data_response,
-)
 from hotieler.api.schemas import (
     AvailabilityResponse,
     BookingResponse,
@@ -40,7 +35,6 @@ from hotieler.application.models import (
     SearchQuery,
 )
 from hotieler.container import AppContainer
-from hotieler.demo_data import DemoDataSnapshot
 from hotieler.domain.value_objects import Money, StayPeriod
 
 router = APIRouter(prefix="/api/v1")
@@ -258,24 +252,6 @@ PAYMENT_RESPONSE_EXAMPLES = {
 
 def _container(request: Request) -> AppContainer:
     return cast(AppContainer, request.app.state.container)
-
-
-@router.get(
-    "/demo-data",
-    tags=["Demo"],
-    response_model=DemoDataResponse,
-    summary="Get preloaded demo IDs and guided test requests",
-    description=(
-        "Returns the Docker demo catalogue, ready-to-copy availability searches, a booking "
-        "request, payment examples, and reset guidance. No bookings are pre-created."
-    ),
-    responses={500: ERROR_RESPONSES[500]},
-)
-def get_demo_data(request: Request) -> DemoDataResponse:
-    snapshot = cast(DemoDataSnapshot | None, request.app.state.demo_data)
-    if snapshot is None:
-        return disabled_demo_data_response()
-    return demo_data_response(snapshot)
 
 
 @router.post(

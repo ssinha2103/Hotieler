@@ -15,7 +15,7 @@ CONTAINER_ID=""
 HOST_PORT=""
 
 compose() {
-  HOTIELER_PORT=0 HOTIELER_SEED_DEMO_DATA=true \
+  HOTIELER_PORT=0 \
     docker compose --project-directory "${PROJECT_DIR}" --project-name "${PROJECT_NAME}" "$@"
 }
 
@@ -145,10 +145,23 @@ assert_contains() {
   fi
 }
 
+assert_equals() {
+  local actual="$1"
+  local expected="$2"
+  local description="$3"
+
+  if [[ "${actual}" != "${expected}" ]]; then
+    fail "${description} was ${actual}; expected ${expected}."
+  fi
+}
+
+catalogue_search() {
+  fetch "/api/v1/properties/search?city=Bengaluru&check_in=2099-01-01&check_out=2099-01-02&guest_count=1"
+}
+
 check_endpoints() {
   local health_body=""
   local openapi_body=""
-  local demo_body=""
 
   health_body="$(fetch /health)"
   assert_contains "${health_body}" '"status":"healthy"' "/health response"
@@ -156,10 +169,14 @@ check_endpoints() {
   openapi_body="$(fetch /openapi.json)"
   assert_contains "${openapi_body}" '"openapi":' "/openapi.json response"
   assert_contains "${openapi_body}" '"/api/v1/bookings"' "/openapi.json response"
+  assert_equals "$(catalogue_search)" '[]' "fresh-start catalogue search"
+}
 
-  demo_body="$(fetch /api/v1/demo-data)"
-  assert_contains "${demo_body}" '"enabled":true' "/api/v1/demo-data response"
-  assert_contains "${demo_body}" '"sample_booking":' "/api/v1/demo-data response"
+seed_through_public_api() {
+  compose exec -T "${SERVICE}" \
+    python scripts/seed_local_data.py --base-url http://127.0.0.1:8000 >/dev/null
+  assert_contains "$(catalogue_search)" '"property_name":"Northstar Bengaluru"' \
+    "catalogue search after public-API seeding"
 }
 
 check_runtime_identity() {
@@ -199,10 +216,11 @@ main() {
   resolve_container
   wait_for_api
   check_endpoints
+  seed_through_public_api
   check_runtime_identity
   check_uvicorn_process_count
 
-  printf 'Docker smoke gate passed: health, OpenAPI, demo data, non-root UID, and one Uvicorn process.\n'
+  printf 'Docker smoke gate passed: health, OpenAPI, public-API seeding, non-root UID, and one Uvicorn process.\n'
 }
 
 main "$@"

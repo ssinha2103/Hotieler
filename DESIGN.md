@@ -213,6 +213,7 @@ rules are included.
 | Request fingerprint idempotency | Safe payment replay with conflict detection | Durable storage is required before horizontal scaling |
 | JSON request/business logs | Correlatable evaluator diagnostics without extra runtime services | No centralized retention, metrics, traces, or alerting |
 | Separate booking/payment saves | Keeps repository ports narrow for the in-memory assessment | No atomic commit across records; production needs a transaction and reconciliation |
+| Empty startup plus API-driven local samples | Fresh clones expose only real product behavior; `./run.sh seed` exercises public onboarding paths | This is a developer client, not a durable SQL/database seed; restart clears it |
 
 ## Likely follow-up questions
 

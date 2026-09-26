@@ -5,7 +5,6 @@ services:
       dockerfile: Dockerfile
     init: true
     environment:
-      HOTIELER_SEED_DEMO_DATA: "${HOTIELER_SEED_DEMO_DATA:-true}"
       HOTIELER_LOG_LEVEL: "${HOTIELER_LOG_LEVEL:-INFO}"
     ports:
       - "${HOTIELER_PORT:-8000}:8000"

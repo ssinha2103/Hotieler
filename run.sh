@@ -27,6 +27,8 @@ Actions:
   restart     Stop, rebuild, and start the API again.
   status      Show Compose status and the current container health state.
   logs        Follow the last 200 API log lines. Press Ctrl-C to stop following.
+  seed        Populate the running API through its public owner/property endpoints.
+              The service must already be running; plain startup remains empty.
   test        Build the image and run the complete pytest suite in a container.
   help        Show this help message.
 
@@ -43,6 +45,7 @@ Examples:
   ./run.sh
   ./run.sh --no-open
   ./run.sh restart --no-open
+  ./run.sh seed
   ./run.sh logs
   ./run.sh test
 EOF
@@ -64,7 +67,7 @@ set_action() {
 parse_arguments() {
   while (($#)); do
     case "$1" in
-      start | stop | restart | status | logs | test | help)
+      start | stop | restart | status | logs | seed | test | help)
         set_action "$1"
         ;;
       --no-open)
@@ -227,6 +230,24 @@ run_tests() {
   docker compose run --rm --no-deps "$SERVICE" pytest -q
 }
 
+seed_local_catalog() {
+  local id=""
+  local health=""
+
+  id="$(container_id)"
+  if [[ -z "$id" ]]; then
+    fail "the API is not running; run './run.sh start --no-open' first"
+  fi
+
+  health="$(container_health "$id")"
+  if [[ "$health" != "healthy" ]]; then
+    fail "the API must be healthy before seeding (current state: '$health')"
+  fi
+
+  docker compose exec -T "$SERVICE" \
+    python scripts/seed_local_data.py --base-url http://127.0.0.1:8000
+}
+
 main() {
   parse_arguments "$@"
 
@@ -255,6 +276,9 @@ main() {
       ;;
     logs)
       docker compose logs --follow --tail=200 "$SERVICE"
+      ;;
+    seed)
+      seed_local_catalog
       ;;
     test)
       run_tests
