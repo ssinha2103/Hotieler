@@ -38,7 +38,7 @@ they continue to work after cloning.
 | Ruff formatting/lint, mypy, runtime smoke | 4 gates | **PASS** in the current Docker-backed verification runs. |
 | Branch-aware coverage | 94.85% (threshold: 90%) | **PASS** in the current Docker `make verify` run. |
 | Staged publication audit | Tracked/staged paths, whitespace, secret signatures, and confidential-file names | **PASS** for the current staged change. |
-| Remote CI | GitHub Actions Docker verification | [Run 36242516289](https://github.com/ssinha2103/Hotieler/actions/runs/36242516289) is a prior published baseline for commit `fa4193d`; a new run is required for later changes. |
+| Remote CI | GitHub Actions Docker verification | **PASS** for implementation commit `0ec44a2` in [run 36250920316](https://github.com/ssinha2103/Hotieler/actions/runs/36250920316). |
 
 ## 1. Round overview and delivery contract
 
@@ -217,7 +217,7 @@ gates; remote CI remains pending until these changes are committed and pushed.
 | Stable, non-leaking JSON envelope for unexpected HTTP `500` responses. | **IMPLEMENTED.** | [`unexpected_error_handler`](src/hotieler/api/error_handlers.py); covered by `test_unhandled_exception_returns_safe_envelope_and_is_correlated`. |
 | Explicit OpenAPI operation descriptions, operation-specific conflict examples, approved/rejected/replayed payment examples, and grouped business capabilities. | **IMPLEMENTED.** | [`api/routes.py`](src/hotieler/api/routes.py), [`api/schemas.py`](src/hotieler/api/schemas.py); covered by `test_openapi_schema_exposes_the_complete_public_http_contract`, `test_openapi_groups_operations_by_business_capability`, and the Swagger test. |
 | Transport-boundary email validation and INR-only public pricing input. | **IMPLEMENTED.** | [`CreateOwnerRequest`](src/hotieler/api/schemas.py) uses an email-format boundary and [`MoneyInput`](src/hotieler/api/schemas.py) restricts public pricing input to INR; HTTP validation cases cover the boundary. |
-| Docker CI runtime smoke: verify empty startup, health/OpenAPI, API-driven local seeding, non-root execution, and one Uvicorn process, then tear down. | **VERIFIED LOCALLY; REMOTE RUN PENDING.** | The current `make smoke` run passed through [`.github/workflows/ci.yml`](.github/workflows/ci.yml), [`Makefile`](Makefile), and [`scripts/docker-smoke.sh`](scripts/docker-smoke.sh). [GitHub Actions run 36242516289](https://github.com/ssinha2103/Hotieler/actions/runs/36242516289) remains evidence only for the earlier `fa4193d` baseline. |
+| Docker CI runtime smoke: verify empty startup, health/OpenAPI, API-driven local seeding, non-root execution, and one Uvicorn process, then tear down. | **VERIFIED LOCALLY AND REMOTELY.** | The current `make smoke` run passed through [`.github/workflows/ci.yml`](.github/workflows/ci.yml), [`Makefile`](Makefile), and [`scripts/docker-smoke.sh`](scripts/docker-smoke.sh); implementation commit `0ec44a2` passed the same gate in [GitHub Actions run 36250920316](https://github.com/ssinha2103/Hotieler/actions/runs/36250920316). |
 | Refactor `PaymentService` into smaller cohesive helpers without changing lock ordering, replay semantics, or state outcomes; add extension-seam tests. | **IMPLEMENTED.** | [`PaymentService`](src/hotieler/application/services.py); coverage includes the existing payment/concurrency cases plus `test_alternate_pricing_strategy_plugs_into_search_and_booking`, `test_alternate_cancellation_policy_plugs_into_service`, and `test_custom_registered_payment_processor_plugs_into_service`. |
 | README refund wording, documentation links, and audit-index discoverability. | **IMPLEMENTED.** | [`README.md`](README.md) links this audit and [`DESIGN.md`](DESIGN.md), distinguishes refund calculation from fund movement, and documents the evaluator workflow. [`DESIGN.md`](DESIGN.md) records the observability and payment-consistency boundaries. |
 | Keep transient `/tmp` content and confidential review renders outside Git and Docker build context. | **VERIFIED LOCALLY.** | [`.gitignore`](.gitignore) and [`.dockerignore`](.dockerignore) contain the guardrails; the current staged path, whitespace, confidential-file-name, and common secret-signature checks pass. |
@@ -263,7 +263,7 @@ notes or submission message.
 | Empty-start and API-driven sample-data behavior | `./run.sh restart --no-open`, then `./run.sh seed` |
 | Live HTTP walkthrough | Swagger approval, rejection, replay, conflict, cancellation, and inventory-release flow |
 | Staged publication audit | **PASS** for the current staged diff: whitespace, confidential-file names, and common private-key/token signatures were checked. |
-| Remote GitHub Actions | CI run attached to the final pushed commit |
+| Remote GitHub Actions | **PASS** for implementation commit `0ec44a2` in [run 36250920316](https://github.com/ssinha2103/Hotieler/actions/runs/36250920316). |
 
 ### External and human evidence
 
