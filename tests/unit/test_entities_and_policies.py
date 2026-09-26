@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -68,6 +68,21 @@ def test_booking_owns_confirmation_and_failed_payment_transitions() -> None:
     assert not failed.reserves_inventory
 
 
+@pytest.mark.parametrize("transition", ["confirm", "mark_payment_failed"])
+def test_booking_payment_transition_timestamp_cannot_move_backwards(transition: str) -> None:
+    value = booking()
+
+    with pytest.raises(
+        DomainValidationError,
+        match="occurred_at cannot be earlier than updated_at",
+    ):
+        getattr(value, transition)(UUID(int=8), NOW - timedelta(microseconds=1))
+
+    assert value.status is BookingStatus.PENDING_PAYMENT
+    assert value.payment_id is None
+    assert value.updated_at == NOW
+
+
 def test_booking_rejects_illegal_transitions() -> None:
     value = booking(status=BookingStatus.CONFIRMED)
 
@@ -92,6 +107,164 @@ def test_booking_cancellation_is_repeat_safe_at_entity_boundary() -> None:
     assert first == second
     assert value.status is BookingStatus.CANCELLED
     assert not value.reserves_inventory
+
+
+def test_cancellation_timestamp_cannot_predate_current_booking_update() -> None:
+    value = booking()
+    value.confirm(UUID(int=4), NOW + timedelta(hours=2))
+    cancellation = CancellationRecord(
+        cancelled_at=NOW + timedelta(hours=1),
+        refund_amount=value.total_price,
+        refund_percentage=Decimal("100"),
+        refund_status=RefundStatus.CALCULATED,
+    )
+
+    with pytest.raises(
+        DomainValidationError,
+        match="cancelled_at cannot be earlier than updated_at",
+    ):
+        value.cancel(cancellation)
+
+    assert value.status is BookingStatus.CONFIRMED
+    assert value.cancellation is None
+    assert value.updated_at == NOW + timedelta(hours=2)
+
+
+def test_cancellation_timestamp_cannot_predate_booking_creation() -> None:
+    value = booking()
+    cancellation = CancellationRecord(
+        cancelled_at=NOW - timedelta(microseconds=1),
+        refund_amount=Money.zero(),
+        refund_percentage=Decimal("0"),
+        refund_status=RefundStatus.NOT_REQUIRED,
+    )
+
+    with pytest.raises(
+        DomainValidationError,
+        match="cancelled_at cannot be earlier than updated_at",
+    ):
+        value.cancel(cancellation)
+
+    assert value.status is BookingStatus.PENDING_PAYMENT
+    assert value.cancellation is None
+    assert value.updated_at == NOW
+
+
+def test_cancellation_refund_currency_must_match_booking() -> None:
+    value = booking(status=BookingStatus.CONFIRMED)
+    cancellation = CancellationRecord(
+        cancelled_at=NOW,
+        refund_amount=Money(Decimal("4000"), "USD"),
+        refund_percentage=Decimal("100"),
+        refund_status=RefundStatus.CALCULATED,
+    )
+
+    with pytest.raises(DomainValidationError, match="same currency"):
+        value.cancel(cancellation)
+
+    assert value.status is BookingStatus.CONFIRMED
+    assert value.cancellation is None
+
+
+def test_cancellation_refund_cannot_exceed_booking_total() -> None:
+    value = booking(status=BookingStatus.CONFIRMED)
+    cancellation = CancellationRecord(
+        cancelled_at=NOW,
+        refund_amount=Money(Decimal("4000.01")),
+        refund_percentage=Decimal("100"),
+        refund_status=RefundStatus.CALCULATED,
+    )
+
+    with pytest.raises(DomainValidationError, match="cannot exceed the booking total price"):
+        value.cancel(cancellation)
+
+    assert value.status is BookingStatus.CONFIRMED
+    assert value.cancellation is None
+
+
+@pytest.mark.parametrize(
+    ("refund_amount", "refund_percentage", "refund_status", "message"),
+    [
+        (
+            Money.zero(),
+            Decimal("100"),
+            RefundStatus.CALCULATED,
+            "amount must match",
+        ),
+        (
+            Money(Decimal("2000")),
+            Decimal("50"),
+            RefundStatus.NOT_REQUIRED,
+            "status must match",
+        ),
+    ],
+)
+def test_confirmed_cancellation_requires_a_self_consistent_refund_record(
+    refund_amount: Money,
+    refund_percentage: Decimal,
+    refund_status: RefundStatus,
+    message: str,
+) -> None:
+    value = booking(status=BookingStatus.CONFIRMED)
+    cancellation = CancellationRecord(
+        cancelled_at=NOW,
+        refund_amount=refund_amount,
+        refund_percentage=refund_percentage,
+        refund_status=refund_status,
+    )
+
+    with pytest.raises(DomainValidationError, match=message):
+        value.cancel(cancellation)
+
+    assert value.status is BookingStatus.CONFIRMED
+    assert value.cancellation is None
+
+
+@pytest.mark.parametrize(
+    ("refund_amount", "refund_percentage", "refund_status"),
+    [
+        (Money(Decimal("1")), Decimal("0"), RefundStatus.NOT_REQUIRED),
+        (Money.zero(), Decimal("1"), RefundStatus.NOT_REQUIRED),
+        (Money.zero(), Decimal("0"), RefundStatus.CALCULATED),
+    ],
+)
+def test_pending_payment_cancellation_requires_zero_refund_not_required(
+    refund_amount: Money,
+    refund_percentage: Decimal,
+    refund_status: RefundStatus,
+) -> None:
+    value = booking()
+    cancellation = CancellationRecord(
+        cancelled_at=NOW,
+        refund_amount=refund_amount,
+        refund_percentage=refund_percentage,
+        refund_status=refund_status,
+    )
+
+    with pytest.raises(
+        DomainValidationError,
+        match="zero refund marked NOT_REQUIRED",
+    ):
+        value.cancel(cancellation)
+
+    assert value.status is BookingStatus.PENDING_PAYMENT
+    assert value.cancellation is None
+
+
+def test_pending_payment_cancellation_accepts_zero_refund_not_required() -> None:
+    value = booking()
+    cancellation = CancellationRecord(
+        cancelled_at=NOW,
+        refund_amount=Money.zero(),
+        refund_percentage=Decimal("0"),
+        refund_status=RefundStatus.NOT_REQUIRED,
+    )
+
+    result = value.cancel(cancellation)
+
+    assert result is cancellation
+    assert value.status is BookingStatus.CANCELLED
+    assert value.updated_at == NOW
 
 
 def test_payment_failed_booking_cannot_be_cancelled() -> None:

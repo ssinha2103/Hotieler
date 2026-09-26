@@ -5,7 +5,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid4
 
 from fastapi.testclient import TestClient
-from httpx import Response
+from httpx2 import Response
 
 from hotieler.container import build_container
 from hotieler.infrastructure.clock import DeterministicIdGenerator, FixedClock
@@ -330,7 +330,22 @@ def test_transport_and_domain_validation_failures_use_the_same_error_shape() -> 
         "/api/v1/owners",
         json={"name": "Invalid Owner", "contact_email": "not-an-email"},
     )
-    _assert_error(invalid_email, 422, "DOMAIN_VALIDATION_ERROR")
+    _assert_error(invalid_email, 422, "REQUEST_VALIDATION_ERROR")
+
+    owner_id = _create_owner(client)
+    non_inr = client.post(
+        f"/api/v1/owners/{owner_id}/properties",
+        json={
+            **_property_payload(),
+            "room_types": [
+                {
+                    **_property_payload()["room_types"][0],
+                    "nightly_rate": {"amount": "1200.00", "currency": "USD"},
+                }
+            ],
+        },
+    )
+    _assert_error(non_inr, 422, "REQUEST_VALIDATION_ERROR")
 
     forbidden_extra_field = client.post(
         "/api/v1/owners",

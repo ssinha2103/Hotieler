@@ -21,11 +21,15 @@ class FakeOwnerRepository:
         self._values: dict[UUID, OwnerAccount] = {}
         self._lock = RLock()
 
-    def save(self, owner: OwnerAccount) -> None:
+    def add(self, owner: OwnerAccount) -> None:
+        snapshot = deepcopy(owner)
         with self._lock:
-            if owner.id in self._values:
-                raise DuplicateResourceError()
-            self._values[owner.id] = deepcopy(owner)
+            if snapshot.id in self._values:
+                raise DuplicateResourceError(
+                    "An owner with this identifier already exists.",
+                    details={"owner_id": str(snapshot.id)},
+                )
+            self._values[snapshot.id] = snapshot
 
     def get(self, owner_id: UUID) -> OwnerAccount | None:
         with self._lock:
@@ -36,13 +40,26 @@ class FakeOwnerRepository:
 class FakePropertyRepository:
     def __init__(self) -> None:
         self._values: dict[UUID, Property] = {}
+        self._room_to_property: dict[UUID, UUID] = {}
         self._lock = RLock()
 
-    def save(self, property: Property) -> None:
+    def add(self, property: Property) -> None:
+        snapshot = deepcopy(property)
         with self._lock:
-            if property.id in self._values:
-                raise DuplicateResourceError()
-            self._values[property.id] = deepcopy(property)
+            if snapshot.id in self._values:
+                raise DuplicateResourceError(
+                    "A property with this identifier already exists.",
+                    details={"property_id": str(snapshot.id)},
+                )
+            for room_type in snapshot.room_types:
+                if room_type.id in self._room_to_property:
+                    raise DuplicateResourceError(
+                        "A room type with this identifier already exists.",
+                        details={"room_type_id": str(room_type.id)},
+                    )
+            self._values[snapshot.id] = snapshot
+            for room_type in snapshot.room_types:
+                self._room_to_property[room_type.id] = snapshot.id
 
     def get(self, property_id: UUID) -> Property | None:
         with self._lock:
@@ -55,11 +72,14 @@ class FakePropertyRepository:
 
     def get_room_type(self, room_type_id: UUID) -> RoomType | None:
         with self._lock:
-            for property in self._values.values():
-                room = property.find_room_type(room_type_id)
-                if room is not None:
-                    return deepcopy(room)
-            return None
+            property_id = self._room_to_property.get(room_type_id)
+            if property_id is None:
+                return None
+            property = self._values.get(property_id)
+            if property is None:
+                return None
+            room = property.find_room_type(room_type_id)
+            return deepcopy(room) if room is not None else None
 
 
 class FakeBookingRepository:

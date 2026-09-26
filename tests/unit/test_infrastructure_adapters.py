@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, date, datetime
-from decimal import Decimal
 from uuid import UUID
 
 import pytest
 
-from hotieler.domain.entities import Booking, PaymentRecord, Property, RoomType
+from hotieler.domain.entities import Booking, PaymentRecord
 from hotieler.domain.enums import (
     BookingStatus,
     MockPaymentOutcome,
@@ -20,7 +18,6 @@ from hotieler.infrastructure.locking import InMemoryKeyedLockManager
 from hotieler.infrastructure.repositories import (
     InMemoryBookingRepository,
     InMemoryPaymentRepository,
-    InMemoryPropertyRepository,
 )
 
 NOW = datetime(2030, 1, 1, 10, tzinfo=UTC)
@@ -37,35 +34,6 @@ def _booking(identifier: int = 1) -> Booking:
         total_price=Money("2000.00"),
         created_at=NOW,
         updated_at=NOW,
-    )
-
-
-def _property(
-    *,
-    property_id: int,
-    room_type_id: int,
-    name: str,
-) -> Property:
-    resolved_property_id = UUID(int=property_id)
-    room_type = RoomType(
-        id=UUID(int=room_type_id),
-        property_id=resolved_property_id,
-        name="Standard",
-        total_units=2,
-        guests_per_unit=2,
-        nightly_rate=Money("1000.00"),
-    )
-    return Property(
-        id=resolved_property_id,
-        owner_id=UUID(int=900),
-        name=name,
-        city="Bengaluru",
-        locality="Indiranagar",
-        address="1 Main Road",
-        star_rating=Decimal("4.5"),
-        amenities=frozenset({"wifi"}),
-        room_types=(room_type,),
-        created_at=NOW,
     )
 
 
@@ -108,44 +76,6 @@ def test_booking_repository_copies_on_write_get_and_list() -> None:
     assert persisted is not None
     assert persisted.status is BookingStatus.PENDING_PAYMENT
     assert persisted.payment_id is None
-
-
-def test_property_repository_reindexes_room_types_when_property_is_replaced() -> None:
-    repository = InMemoryPropertyRepository()
-    original = _property(property_id=10, room_type_id=11, name="Original")
-    repository.save(original)
-    replacement_room = replace(
-        original.room_types[0],
-        id=UUID(int=12),
-        name="Replacement",
-    )
-    replacement = replace(original, name="Updated", room_types=(replacement_room,))
-
-    repository.save(replacement)
-
-    assert repository.get_room_type(UUID(int=11)) is None
-    assert repository.get_room_type(UUID(int=12)) == replacement_room
-    stored = repository.get(original.id)
-    assert stored == replacement
-    assert stored is not replacement
-
-
-def test_failed_property_replacement_preserves_existing_room_index() -> None:
-    repository = InMemoryPropertyRepository()
-    first = _property(property_id=20, room_type_id=21, name="First")
-    second = _property(property_id=30, room_type_id=31, name="Second")
-    repository.save(first)
-    repository.save(second)
-    conflicting_room = replace(second.room_types[0], property_id=first.id)
-    invalid_replacement = replace(first, room_types=(conflicting_room,))
-
-    with pytest.raises(DuplicateResourceError):
-        repository.save(invalid_replacement)
-
-    assert repository.get(first.id) == first
-    assert repository.get_room_type(first.room_types[0].id) == first.room_types[0]
-    assert repository.get(second.id) == second
-    assert repository.get_room_type(second.room_types[0].id) == second.room_types[0]
 
 
 def test_payment_repository_rejects_duplicate_key_without_replacing_original() -> None:

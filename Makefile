@@ -2,7 +2,7 @@ UV_IMAGE := ghcr.io/astral-sh/uv:0.8.22-python3.12-bookworm-slim
 COMPOSE := docker compose
 SERVICE := api
 
-.PHONY: install lock build run stop test test-unit test-integration test-concurrency coverage lint typecheck verify
+.PHONY: install lock build run stop test test-unit test-integration test-concurrency coverage lint typecheck smoke verify
 
 install: build
 
@@ -45,6 +45,10 @@ lint: build
 
 typecheck: build
 	$(COMPOSE) run --rm --no-deps $(SERVICE) mypy src
+
+smoke:
+	bash -n scripts/docker-smoke.sh
+	./scripts/docker-smoke.sh
 
 verify: build
 	$(COMPOSE) run --rm --no-deps $(SERVICE) sh -c \

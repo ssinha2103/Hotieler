@@ -60,6 +60,61 @@ def test_openapi_schema_exposes_the_complete_public_http_contract() -> None:
     assert idempotency_header["required"] is True
     assert idempotency_header["schema"]["type"] == "string"
 
+    payment_operation = schema["paths"]["/api/v1/bookings/{booking_id}/payments"]["post"]
+    payment_request_examples = payment_operation["requestBody"]["content"]["application/json"][
+        "examples"
+    ]
+    assert set(payment_request_examples) == {"approved", "rejected"}
+    assert payment_request_examples["approved"]["value"]["mock_outcome"] == "APPROVED"
+    assert payment_request_examples["rejected"]["value"]["mock_outcome"] == "REJECTED"
+
+    payment_response_examples = payment_operation["responses"]["200"]["content"][
+        "application/json"
+    ]["examples"]
+    assert set(payment_response_examples) == {"processed", "rejected", "replayed"}
+    assert payment_response_examples["processed"]["value"]["replayed"] is False
+    assert payment_response_examples["processed"]["value"]["payment"]["status"] == "APPROVED"
+    assert payment_response_examples["processed"]["value"]["booking"]["status"] == "CONFIRMED"
+    assert payment_response_examples["rejected"]["value"]["replayed"] is False
+    assert payment_response_examples["rejected"]["value"]["payment"]["status"] == "REJECTED"
+    assert payment_response_examples["rejected"]["value"]["booking"]["status"] == "PAYMENT_FAILED"
+    assert payment_response_examples["replayed"]["value"]["replayed"] is True
+
+    booking_operation = schema["paths"]["/api/v1/bookings"]["post"]
+    cancellation_operation = schema["paths"]["/api/v1/bookings/{booking_id}/cancel"]["post"]
+
+    def conflict_examples(operation: dict[str, object]) -> dict[str, object]:
+        return operation["responses"]["409"]["content"]["application/json"][  # type: ignore[index]
+            "examples"
+        ]
+
+    assert set(conflict_examples(booking_operation)) == {
+        "inventory_unavailable",
+        "property_room_mismatch",
+    }
+    assert set(conflict_examples(payment_operation)) == {
+        "idempotency_conflict",
+        "invalid_transition",
+    }
+    assert set(conflict_examples(cancellation_operation)) == {
+        "cancellation_not_allowed",
+        "invalid_transition",
+    }
+
+    operations_without_conflicts = (
+        schema["paths"]["/api/v1/demo-data"]["get"],
+        schema["paths"]["/api/v1/owners"]["post"],
+        schema["paths"]["/api/v1/owners/{owner_id}/properties"]["post"],
+        schema["paths"]["/api/v1/properties/search"]["get"],
+        schema["paths"]["/api/v1/bookings/{booking_id}"]["get"],
+    )
+    assert all("409" not in operation["responses"] for operation in operations_without_conflicts)
+    assert "same key and fingerprint" in payment_operation["description"]
+
+    owner_schema = schema["components"]["schemas"]["CreateOwnerRequest"]
+    assert owner_schema["properties"]["contact_email"]["format"] == "email"
+    assert owner_schema["examples"]
+
 
 def test_redoc_is_available_as_a_secondary_contract_view() -> None:
     client = TestClient(create_app())

@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from hotieler.application.models import AvailabilityQuote, PaymentCommandResult
 from hotieler.domain.entities import (
@@ -33,13 +33,20 @@ class _RequestModel(BaseModel):
 
 
 class MoneyInput(_RequestModel):
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"amount": "3500.00", "currency": "INR"}]}
+    )
+
     amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     currency: str = Field(default="INR", min_length=3, max_length=3)
 
     @field_validator("currency")
     @classmethod
     def normalize_currency(cls, value: str) -> str:
-        return value.upper()
+        normalized = value.upper()
+        if normalized != "INR":
+            raise ValueError("Only INR is supported by this assessment API.")
+        return normalized
 
 
 class MoneyResponse(BaseModel):
@@ -48,8 +55,19 @@ class MoneyResponse(BaseModel):
 
 
 class CreateOwnerRequest(_RequestModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "Northstar Hospitality",
+                    "contact_email": "owner@northstar.example",
+                }
+            ]
+        }
+    )
+
     name: str = Field(min_length=1, max_length=120)
-    contact_email: str = Field(min_length=3, max_length=254)
+    contact_email: EmailStr = Field(max_length=254)
 
 
 class OwnerResponse(BaseModel):
@@ -68,6 +86,30 @@ class RoomTypeRequest(_RequestModel):
 
 
 class CreatePropertyRequest(_RequestModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "Northstar Bengaluru",
+                    "city": "Bengaluru",
+                    "locality": "Indiranagar",
+                    "address": "100 Main Road",
+                    "star_rating": "4.5",
+                    "amenities": ["wifi", "pool"],
+                    "room_types": [
+                        {
+                            "name": "Deluxe",
+                            "total_units": 2,
+                            "guests_per_unit": 2,
+                            "nightly_rate": {"amount": "3500.00", "currency": "INR"},
+                            "amenities": ["air conditioning"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
     name: str = Field(min_length=1, max_length=160)
     city: str = Field(min_length=1, max_length=120)
     locality: str = Field(min_length=1, max_length=120)
@@ -114,6 +156,20 @@ class AvailabilityResponse(BaseModel):
 
 
 class CreateBookingRequest(_RequestModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "property_id": "11111111-1111-4111-8111-111111111111",
+                    "room_type_id": "22222222-2222-4222-8222-222222222222",
+                    "check_in": "2030-12-20",
+                    "check_out": "2030-12-22",
+                    "guest_count": 2,
+                }
+            ]
+        }
+    )
+
     property_id: UUID
     room_type_id: UUID
     check_in: date
@@ -150,6 +206,15 @@ class BookingResponse(BaseModel):
 
 
 class ProcessPaymentRequest(_RequestModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {"method": "CARD", "mock_outcome": "APPROVED"},
+                {"method": "UPI", "mock_outcome": "REJECTED"},
+            ]
+        }
+    )
+
     method: PaymentMethod
     mock_outcome: MockPaymentOutcome
 
@@ -184,6 +249,20 @@ class ErrorBody(BaseModel):
 
 
 class ErrorResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "error": {
+                        "code": "ROOM_INVENTORY_UNAVAILABLE",
+                        "message": "The requested room inventory is no longer available.",
+                        "details": {},
+                    }
+                }
+            ]
+        }
+    )
+
     error: ErrorBody
 
 

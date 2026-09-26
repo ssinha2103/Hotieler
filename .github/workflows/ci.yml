@@ -28,3 +28,27 @@ jobs:
 
       - name: Run quality gates
         run: make verify
+
+      - name: Run isolated Docker runtime smoke gate
+        env:
+          HOTIELER_SMOKE_PROJECT_NAME: hotieler-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          HOTIELER_SMOKE_LOG_FILE: ${{ runner.temp }}/hotieler-smoke.log
+        run: make smoke
+
+      - name: Print Docker runtime smoke logs
+        if: always()
+        run: |
+          if [[ -f "${RUNNER_TEMP}/hotieler-smoke.log" ]]; then
+            cat "${RUNNER_TEMP}/hotieler-smoke.log"
+          else
+            echo "Smoke log was not created."
+          fi
+
+      - name: Ensure isolated smoke resources are removed
+        if: always()
+        env:
+          HOTIELER_SMOKE_PROJECT_NAME: hotieler-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          docker compose \
+            --project-name "${HOTIELER_SMOKE_PROJECT_NAME}" \
+            down --volumes --remove-orphans --rmi local || true

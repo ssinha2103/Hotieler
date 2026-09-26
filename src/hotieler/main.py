@@ -8,6 +8,7 @@ from datetime import date
 from fastapi import FastAPI
 
 from hotieler.api.error_handlers import install_error_handlers
+from hotieler.api.observability import RequestLoggingMiddleware, configure_logging
 from hotieler.api.routes import router
 from hotieler.api.schemas import HealthResponse
 from hotieler.container import AppContainer, build_container
@@ -56,6 +57,7 @@ def create_app(
     seed_demo: bool | None = None,
     demo_as_of: date | None = None,
 ) -> FastAPI:
+    configure_logging()
     resolved_container = container or build_container()
     should_seed_demo = (
         seed_demo if seed_demo is not None else container is None and _demo_seed_enabled()
@@ -72,6 +74,7 @@ def create_app(
         ),
         openapi_tags=OPENAPI_TAGS,
     )
+    app.add_middleware(RequestLoggingMiddleware)
     app.state.container = resolved_container
     app.state.demo_data = (
         seed_demo_data(resolved_container, as_of=demo_as_of) if should_seed_demo else None

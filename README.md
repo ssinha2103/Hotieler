@@ -8,7 +8,11 @@
 Hotieler is a backend-only hotel booking service built to demonstrate domain modelling,
 correct inventory handling under concurrency, payment idempotency, and replaceable
 infrastructure boundaries. It supports property onboarding, availability search,
-inventory-safe booking, deterministic mock payments, cancellation, and refunds.
+inventory-safe booking, deterministic mock payments, cancellation, and refund calculation.
+
+Start with the [assessment traceability matrix](ASSESSMENT_TRACEABILITY.md) for a
+point-by-point map from requirements to endpoints, implementation symbols, tests, and
+demo steps. See [DESIGN.md](DESIGN.md) for the focused architecture walkthrough.
 
 ## What this project demonstrates
 
@@ -20,17 +24,17 @@ inventory-safe booking, deterministic mock payments, cancellation, and refunds.
 | Payment safety | Required idempotency keys, request fingerprints, replay, and conflict semantics |
 | Testability | Deterministic clock/ID seams, isolated in-memory stores, and mock payment processors |
 | API design | Versioned REST endpoints, stable errors, OpenAPI examples, and grouped Swagger operations |
+| Operability | Correlated request IDs, structured JSON request/business logs, and safe `500` responses |
 | Failure handling | Explicit rejected-payment, invalid-transition, cancellation, and inventory-conflict paths |
-| Reproducibility | One-command Docker startup and all quality checks executed inside containers |
+| Reproducibility | One-command Docker startup, container-only quality gates, and an isolated runtime smoke test |
 
 > **Assessment language note:** the original brief specifies Java 17 and Spring Boot.
 > The recruiter explicitly approved Python 3.12 and FastAPI for this submission. That
 > approval correspondence should be retained alongside the submitted repository.
 
-The service intentionally has no frontend, authentication, production database, or real
-payment integration. These exclusions keep the implementation focused on the assessment's
-backend design and correctness criteria. The deeper design rationale is in
-[DESIGN.md](DESIGN.md).
+The service intentionally has no frontend, authentication, production database, real
+payment integration, or real refund movement. These exclusions keep the implementation
+focused on the assessment's backend design and correctness criteria.
 
 ## Quick start
 
@@ -140,7 +144,7 @@ All business endpoints are versioned under `/api/v1`.
 | `POST` | `/api/v1/bookings` | Recheck availability and hold inventory |
 | `GET` | `/api/v1/bookings/{booking_id}` | Read authoritative booking state |
 | `POST` | `/api/v1/bookings/{booking_id}/payments` | Execute a deterministic mock payment |
-| `POST` | `/api/v1/bookings/{booking_id}/cancel` | Cancel a booking and calculate its refund |
+| `POST` | `/api/v1/bookings/{booking_id}/cancel` | Cancel a booking and record its refund calculation |
 
 Mock payment methods are `CARD`, `UPI`, and `WALLET`; outcomes are `APPROVED` and
 `REJECTED`. The API never accepts card details, UPI IDs, wallet credentials, OTPs, or
@@ -158,52 +162,65 @@ Business errors use one stable envelope:
 }
 ```
 
-## Architecture
+## Request tracing and structured logs
 
-```mermaid
-flowchart TD
-    API[FastAPI routes and Pydantic schemas]
-    APP[Application services]
-    DOMAIN[Domain entities, value objects, policies]
-    PORTS[Repository and gateway protocols]
-    INFRA[In-memory repositories, locks, clocks, mock payments]
+Every HTTP response includes `X-Request-ID`. A caller-supplied ID is reused only when it is
+1-64 characters, starts with an alphanumeric character, and otherwise contains only
+alphanumerics, `.`, `_`, or `-`; the API generates an opaque UUID for anything else. This
+lets an evaluator correlate a response with its log event without exposing request bodies
+or payment credentials.
 
-    API --> APP
-    APP --> DOMAIN
-    APP --> PORTS
-    INFRA -. implements .-> PORTS
+Application logs are one-line JSON records. Request-completion records include the request
+ID, method, route template, status, and duration. Selected business events add stable
+resource IDs and lifecycle statuses. Email addresses, idempotency keys, request bodies,
+and payment credentials are deliberately not logged. Follow the records with:
+
+```bash
+./run.sh logs
 ```
 
-The domain imports neither FastAPI, Pydantic, nor infrastructure code. An explicit
-composition root wires application services to thread-safe, copy-safe in-memory
-repositories and deterministic mock adapters.
+The default level is `INFO`; set `HOTIELER_LOG_LEVEL` when starting or restarting:
+
+```bash
+HOTIELER_LOG_LEVEL=DEBUG ./run.sh restart --no-open
+```
+
+Unexpected exceptions return the same stable error shape with code
+`INTERNAL_SERVER_ERROR`; internal exception details stay in the server logs and are not
+returned to the client.
+
+## Repository shape
+
+The dependency rule is API -> application -> domain/ports, with infrastructure adapters
+wired only at the composition root. The domain imports neither FastAPI nor infrastructure.
 
 ```text
-src/hotieler/
-├── api/             # HTTP schemas, routes, documentation, error mapping
-├── application/     # use cases, ports, and application result models
-├── domain/          # entities, value objects, policies, specifications
-├── infrastructure/  # repositories, locking, clocks, mock payments
-├── container.py     # explicit dependency composition
-├── demo_data.py     # deterministic Swagger demonstration fixture
-└── main.py          # FastAPI application factory
-
-tests/
-├── unit/            # domain, policies, services, and adapter contracts
-├── integration/     # complete HTTP flows and OpenAPI behavior
-└── concurrency/     # inventory, payment, and cancellation races
+Hotieler/
+├── ASSESSMENT_TRACEABILITY.md  # requirement-to-evidence audit index
+├── DESIGN.md                   # focused architecture and trade-offs
+├── Dockerfile                  # locked, non-root, single-worker runtime
+├── compose.yaml                # local evaluator runtime and healthcheck
+├── run.sh                      # Docker-only evaluator launcher
+├── scripts/
+│   └── docker-smoke.sh         # isolated runtime acceptance gate
+├── src/hotieler/
+│   ├── api/                    # HTTP schemas, routes, errors, observability
+│   ├── application/            # use cases, ports, and result models
+│   ├── domain/                 # entities, value objects, policies, specifications
+│   ├── infrastructure/         # repositories, locks, clocks, mock payments
+│   ├── container.py            # explicit dependency composition
+│   ├── demo_data.py            # deterministic Swagger fixture
+│   └── main.py                 # FastAPI application factory
+└── tests/
+    ├── unit/                   # domain, service, extension, adapter contracts
+    ├── integration/            # HTTP, OpenAPI, demo, and observability flows
+    └── concurrency/            # inventory, payment, and cancellation races
 ```
 
 ## Testing and quality gates
 
-The current verified baseline is **103 passing tests** with **94.79% branch coverage**.
-Coverage is enforced at 90%.
-
-| Test layer | Count | Primary purpose |
-|---|---:|---|
-| Unit | 72 | Domain invariants, policies, services, and adapter contracts |
-| Integration | 23 | Complete REST journeys, failures, demo data, and OpenAPI behavior |
-| Concurrency | 8 | Inventory oversell, idempotency, payment, and cancellation races |
+Branch coverage is enforced at 90%. Exact test and coverage results are generated by the
+commands below rather than duplicated as a number that can become stale.
 
 ```bash
 make test              # complete test suite
@@ -214,42 +231,27 @@ make coverage          # branch coverage report
 make lint              # Ruff format and lint checks
 make typecheck         # mypy strict application check
 make verify            # all quality gates plus import compilation
+make smoke             # isolated container health/OpenAPI/runtime assertions
 ```
 
-Every Python command above runs in a disposable Docker container. The concurrency tests
-use barriers rather than timing sleeps and prove:
+Every Python command above runs in a disposable Docker container. `make smoke` additionally
+proves that the built API becomes healthy, serves OpenAPI and demo data, runs as a non-root
+user, and has exactly one Uvicorn process. Barrier-backed concurrency tests cover
+overselling, same-key payment replay, payment-versus-cancellation races, and inventory
+reuse after rejection or cancellation. `make lock` refreshes the committed `uv.lock`
+inside Docker.
 
-- simultaneous requests for one remaining unit produce exactly one booking;
-- total active reservations never exceed inventory;
-- concurrent retries with one payment key process once and replay safely;
-- payment and cancellation races finish in a valid state without deadlock;
-- rejected and cancelled bookings return inventory for reuse.
+## Important assumptions
 
-## Key design decisions
+Stays use half-open calendar intervals and must begin today or later. Search price filters
+apply to nightly rate; amenity matching is normalized, case-insensitive, and all-of.
+Amounts use `Decimal` and travel as strings. Pending-payment holds do not expire.
 
-| Decision | Reason | Deliberate trade-off |
-|---|---|---|
-| Derive availability from active bookings | Avoid a second mutable counter that can drift | Search cost grows with in-memory bookings |
-| Lock by room type | Serialize only requests competing for the same inventory | Guarantee is process-local |
-| Keep price and required units on the booking | Preserve the original commercial decision | Later catalog edits do not reprice old bookings |
-| Model payment outcomes explicitly | Make success, rejection, replay, and conflicts testable | No real provider integration |
-| Use narrow protocols at variation points | Keep persistence, payment, policy, clock, and ID generation replaceable | Avoid generic abstraction layers |
-| Run one API worker | Storage and locks are in memory | Horizontal scaling requires durable coordination |
-
-## Domain assumptions
-
-- Dates are calendar dates; stays must begin today or later.
-- Check-out is exclusive and later than check-in.
-- Search price filters apply to the nightly room rate, not the total quote.
-- Requested amenities use normalized, case-insensitive all-of matching across property and
-  room amenities.
-- Search ordering is currency, quoted total, property name, then room type.
-- Monetary arithmetic uses `Decimal`; JSON amounts are strings.
-- Pending-payment holds do not expire in this assessment version.
-- Cancellation at least two days before check-in refunds 100%; one day before refunds
-  50%; the check-in date refunds 0%; cancellation after check-in is rejected.
-- Cancelling a pending booking releases inventory without creating a refund.
-- Repeated cancellation returns the recorded result and never releases inventory twice.
+The default cancellation policy calculates 100% at least two days before check-in, 50%
+one day before, and 0% on check-in day; later cancellation is rejected. This is only a
+recorded refund calculation: no funds move and no refund provider is called. Pending
+cancellation records a zero refund as `NOT_REQUIRED`; repeated cancellation returns the
+same result.
 
 ## Intentional limitations and production evolution
 
@@ -257,17 +259,15 @@ State is lost when the container restarts. Docker is used as a reproducible eval
 environment, not presented as a production deployment design. The Compose service runs
 exactly one Uvicorn worker because both inventory locks and repositories are process-local.
 
+Payment handling is serialized by idempotency-key and booking locks, but the in-memory
+booking and payment records are written to two repositories without a shared transaction.
+An adapter failure or process crash between those writes could leave a transitioned booking
+without its payment record. This is an explicit assessment boundary, not a production
+atomicity claim.
+
 A production evolution would introduce PostgreSQL transactions with row-level or
-optimistic inventory control, durable idempotency records, expiring holds, asynchronous
-payment and refund webhooks, authentication and authorization, observability, and
+optimistic inventory control, durable idempotency records, expiring holds, a persisted
+payment-attempt/outbox and reconciliation flow, asynchronous payment and refund webhooks,
+authentication and authorization, centralized log collection plus metrics/tracing, and
 multi-instance coordination. Those concerns are intentionally outside this machine-coding
 submission.
-
-## Dependency maintenance
-
-Dependencies are resolved through the committed `uv.lock`. Regenerate it without
-installing `uv` on the host:
-
-```bash
-make lock
-```

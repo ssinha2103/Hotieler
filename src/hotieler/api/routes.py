@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Annotated, Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Header, Path, Query, Request, status
+from fastapi import APIRouter, Body, Header, Path, Query, Request, status
 
 from hotieler.api.demo_schemas import (
     DemoDataResponse,
@@ -46,9 +46,213 @@ from hotieler.domain.value_objects import Money, StayPeriod
 router = APIRouter(prefix="/api/v1")
 
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
-    404: {"model": ErrorResponse, "description": "The requested resource does not exist."},
-    409: {"model": ErrorResponse, "description": "The command conflicts with current state."},
-    422: {"model": ErrorResponse, "description": "The request or domain input is invalid."},
+    404: {
+        "model": ErrorResponse,
+        "description": "The requested resource does not exist.",
+        "content": {
+            "application/json": {
+                "examples": {
+                    "not_found": {
+                        "value": {
+                            "error": {
+                                "code": "RESOURCE_NOT_FOUND",
+                                "message": "Booking was not found.",
+                                "details": {},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    },
+    422: {
+        "model": ErrorResponse,
+        "description": "The request or domain input is invalid.",
+        "content": {
+            "application/json": {
+                "examples": {
+                    "validation_error": {
+                        "value": {
+                            "error": {
+                                "code": "REQUEST_VALIDATION_ERROR",
+                                "message": "The request could not be validated.",
+                                "details": {"errors": []},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    },
+    500: {
+        "model": ErrorResponse,
+        "description": "An unexpected error was hidden behind the stable public envelope.",
+        "content": {
+            "application/json": {
+                "examples": {
+                    "internal_error": {
+                        "value": {
+                            "error": {
+                                "code": "INTERNAL_SERVER_ERROR",
+                                "message": "An unexpected internal error occurred.",
+                                "details": {},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    },
+}
+
+BOOKING_CONFLICT_RESPONSE: dict[str, Any] = {
+    "model": ErrorResponse,
+    "description": "The requested property/room pair or inventory state prevents booking.",
+    "content": {
+        "application/json": {
+            "examples": {
+                "inventory_unavailable": {
+                    "value": {
+                        "error": {
+                            "code": "ROOM_INVENTORY_UNAVAILABLE",
+                            "message": "The requested room inventory is no longer available.",
+                            "details": {},
+                        }
+                    }
+                },
+                "property_room_mismatch": {
+                    "value": {
+                        "error": {
+                            "code": "PROPERTY_ROOM_MISMATCH",
+                            "message": "The room type does not belong to the requested property.",
+                            "details": {},
+                        }
+                    }
+                },
+            }
+        }
+    },
+}
+
+PAYMENT_CONFLICT_RESPONSE: dict[str, Any] = {
+    "model": ErrorResponse,
+    "description": "The idempotency key or booking lifecycle state prevents payment.",
+    "content": {
+        "application/json": {
+            "examples": {
+                "idempotency_conflict": {
+                    "value": {
+                        "error": {
+                            "code": "IDEMPOTENCY_KEY_CONFLICT",
+                            "message": (
+                                "The idempotency key was already used for a different request."
+                            ),
+                            "details": {},
+                        }
+                    }
+                },
+                "invalid_transition": {
+                    "value": {
+                        "error": {
+                            "code": "INVALID_BOOKING_TRANSITION",
+                            "message": "The booking cannot transition from its current state.",
+                            "details": {},
+                        }
+                    }
+                },
+            }
+        }
+    },
+}
+
+CANCELLATION_CONFLICT_RESPONSE: dict[str, Any] = {
+    "model": ErrorResponse,
+    "description": "The booking lifecycle or stay dates prevent cancellation.",
+    "content": {
+        "application/json": {
+            "examples": {
+                "cancellation_not_allowed": {
+                    "value": {
+                        "error": {
+                            "code": "CANCELLATION_NOT_ALLOWED",
+                            "message": "The booking can no longer be cancelled.",
+                            "details": {},
+                        }
+                    }
+                },
+                "invalid_transition": {
+                    "value": {
+                        "error": {
+                            "code": "INVALID_BOOKING_TRANSITION",
+                            "message": "The booking cannot transition from its current state.",
+                            "details": {},
+                        }
+                    }
+                },
+            }
+        }
+    },
+}
+
+_PAYMENT_RESPONSE_VALUE: dict[str, Any] = {
+    "booking": {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "property_id": "11111111-1111-4111-8111-111111111111",
+        "room_type_id": "22222222-2222-4222-8222-222222222222",
+        "stay": {"check_in": "2030-12-20", "check_out": "2030-12-22", "nights": 2},
+        "guest_count": 2,
+        "required_units": 1,
+        "total_price": {"amount": "7000.00", "currency": "INR"},
+        "status": "CONFIRMED",
+        "payment_id": "44444444-4444-4444-8444-444444444444",
+        "cancellation": None,
+        "created_at": "2030-12-01T10:00:00Z",
+        "updated_at": "2030-12-01T10:01:00Z",
+    },
+    "payment": {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "booking_id": "33333333-3333-4333-8333-333333333333",
+        "method": "CARD",
+        "amount": {"amount": "7000.00", "currency": "INR"},
+        "status": "APPROVED",
+        "mock_outcome": "APPROVED",
+        "provider_reference": "MOCK-CARD-EXAMPLE",
+        "idempotency_key": "payment-attempt-001",
+        "booking_status_after": "CONFIRMED",
+        "created_at": "2030-12-01T10:01:00Z",
+    },
+    "replayed": False,
+}
+
+_REJECTED_PAYMENT_RESPONSE_VALUE: dict[str, Any] = {
+    **_PAYMENT_RESPONSE_VALUE,
+    "booking": {
+        **_PAYMENT_RESPONSE_VALUE["booking"],
+        "status": "PAYMENT_FAILED",
+    },
+    "payment": {
+        **_PAYMENT_RESPONSE_VALUE["payment"],
+        "method": "UPI",
+        "status": "REJECTED",
+        "mock_outcome": "REJECTED",
+        "provider_reference": "MOCK-UPI-EXAMPLE",
+        "booking_status_after": "PAYMENT_FAILED",
+    },
+}
+
+PAYMENT_RESPONSE_EXAMPLES = {
+    "processed": {
+        "summary": "An approved payment was processed",
+        "value": _PAYMENT_RESPONSE_VALUE,
+    },
+    "rejected": {
+        "summary": "A rejected payment was processed and released inventory",
+        "value": _REJECTED_PAYMENT_RESPONSE_VALUE,
+    },
+    "replayed": {
+        "summary": "The same idempotent result was replayed",
+        "value": {**_PAYMENT_RESPONSE_VALUE, "replayed": True},
+    },
 }
 
 
@@ -65,6 +269,7 @@ def _container(request: Request) -> AppContainer:
         "Returns the Docker demo catalogue, ready-to-copy availability searches, a booking "
         "request, payment examples, and reset guidance. No bookings are pre-created."
     ),
+    responses={500: ERROR_RESPONSES[500]},
 )
 def get_demo_data(request: Request) -> DemoDataResponse:
     snapshot = cast(DemoDataSnapshot | None, request.app.state.demo_data)
@@ -78,12 +283,12 @@ def get_demo_data(request: Request) -> DemoDataResponse:
     tags=["Owners"],
     response_model=OwnerResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={422: ERROR_RESPONSES[422]},
+    responses={422: ERROR_RESPONSES[422], 500: ERROR_RESPONSES[500]},
     summary="Create an owner account",
 )
 def create_owner(payload: CreateOwnerRequest, request: Request) -> OwnerResponse:
     owner = _container(request).catalog_service.create_owner(
-        CreateOwnerCommand(name=payload.name, contact_email=payload.contact_email)
+        CreateOwnerCommand(name=payload.name, contact_email=str(payload.contact_email))
     )
     return owner_response(owner)
 
@@ -93,7 +298,11 @@ def create_owner(payload: CreateOwnerRequest, request: Request) -> OwnerResponse
     tags=["Properties & Search"],
     response_model=PropertyResponse,
     status_code=status.HTTP_201_CREATED,
-    responses=ERROR_RESPONSES,
+    responses={
+        404: ERROR_RESPONSES[404],
+        422: ERROR_RESPONSES[422],
+        500: ERROR_RESPONSES[500],
+    },
     summary="Add a property and its room types",
 )
 def create_property(
@@ -128,8 +337,12 @@ def create_property(
     "/properties/search",
     tags=["Properties & Search"],
     response_model=list[AvailabilityResponse],
-    responses={422: ERROR_RESPONSES[422]},
+    responses={422: ERROR_RESPONSES[422], 500: ERROR_RESPONSES[500]},
     summary="Search available room types",
+    description=(
+        "Returns an advisory availability snapshot. Booking creation performs the authoritative "
+        "inventory check again under the room-type lock."
+    ),
 )
 def search_properties(
     request: Request,
@@ -162,8 +375,17 @@ def search_properties(
     tags=["Bookings"],
     response_model=BookingResponse,
     status_code=status.HTTP_201_CREATED,
-    responses=ERROR_RESPONSES,
+    responses={
+        404: ERROR_RESPONSES[404],
+        409: BOOKING_CONFLICT_RESPONSE,
+        422: ERROR_RESPONSES[422],
+        500: ERROR_RESPONSES[500],
+    },
     summary="Create a pending booking and reserve inventory",
+    description=(
+        "Rechecks availability atomically, snapshots the server-side price, and creates a "
+        "PENDING_PAYMENT inventory hold."
+    ),
 )
 def create_booking(payload: CreateBookingRequest, request: Request) -> BookingResponse:
     booking = _container(request).booking_service.create(
@@ -181,7 +403,11 @@ def create_booking(payload: CreateBookingRequest, request: Request) -> BookingRe
     "/bookings/{booking_id}",
     tags=["Bookings"],
     response_model=BookingResponse,
-    responses={404: ERROR_RESPONSES[404], 422: ERROR_RESPONSES[422]},
+    responses={
+        404: ERROR_RESPONSES[404],
+        422: ERROR_RESPONSES[422],
+        500: ERROR_RESPONSES[500],
+    },
     summary="Fetch current booking state",
 )
 def get_booking(
@@ -195,11 +421,39 @@ def get_booking(
     "/bookings/{booking_id}/payments",
     tags=["Payments"],
     response_model=PaymentResultResponse,
-    responses=ERROR_RESPONSES,
+    responses={
+        200: {
+            "description": "Processed or safely replayed payment result.",
+            "content": {"application/json": {"examples": PAYMENT_RESPONSE_EXAMPLES}},
+        },
+        404: ERROR_RESPONSES[404],
+        409: PAYMENT_CONFLICT_RESPONSE,
+        422: ERROR_RESPONSES[422],
+        500: ERROR_RESPONSES[500],
+    },
     summary="Execute a deterministic mock payment",
+    description=(
+        "Requires Idempotency-Key. APPROVED and REJECTED are both processed outcomes returned "
+        "with HTTP 200. Reusing the same key and fingerprint replays the original result; a "
+        "changed fingerprint returns HTTP 409."
+    ),
 )
 def process_payment(
-    payload: ProcessPaymentRequest,
+    payload: Annotated[
+        ProcessPaymentRequest,
+        Body(
+            openapi_examples={
+                "approved": {
+                    "summary": "Simulate an approved card payment",
+                    "value": {"method": "CARD", "mock_outcome": "APPROVED"},
+                },
+                "rejected": {
+                    "summary": "Simulate a rejected UPI payment",
+                    "value": {"method": "UPI", "mock_outcome": "REJECTED"},
+                },
+            }
+        ),
+    ],
     request: Request,
     booking_id: Annotated[UUID, Path()],
     idempotency_key: Annotated[
@@ -222,8 +476,17 @@ def process_payment(
     "/bookings/{booking_id}/cancel",
     tags=["Bookings"],
     response_model=BookingResponse,
-    responses=ERROR_RESPONSES,
-    summary="Cancel a booking and calculate its refund",
+    responses={
+        404: ERROR_RESPONSES[404],
+        409: CANCELLATION_CONFLICT_RESPONSE,
+        422: ERROR_RESPONSES[422],
+        500: ERROR_RESPONSES[500],
+    },
+    summary="Cancel a booking and record its refund calculation",
+    description=(
+        "Applies the injected cancellation policy, releases inventory, and records the refund "
+        "calculation. Repeating an already completed cancellation returns the stored result."
+    ),
 )
 def cancel_booking(
     request: Request,

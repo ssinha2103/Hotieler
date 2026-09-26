@@ -15,6 +15,7 @@ htmlcov
 .ruff_cache
 build
 dist
+tmp
 .DS_Store
 .idea
 .vscode

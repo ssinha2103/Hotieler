@@ -180,6 +180,8 @@ class Booking:
             raise DomainValidationError("A cancelled booking requires cancellation details.")
         if self.status is not BookingStatus.CANCELLED and self.cancellation is not None:
             raise DomainValidationError("Only a cancelled booking can hold cancellation details.")
+        if self.cancellation is not None:
+            self._validate_cancellation(self.cancellation)
 
     @property
     def reserves_inventory(self) -> bool:
@@ -187,15 +189,17 @@ class Booking:
 
     def confirm(self, payment_id: UUID, occurred_at: datetime) -> None:
         self._require_pending(BookingStatus.CONFIRMED)
+        transition_time = self._validated_transition_time(occurred_at, "occurred_at")
         self.status = BookingStatus.CONFIRMED
         self.payment_id = payment_id
-        self.updated_at = _utc(occurred_at, "occurred_at")
+        self.updated_at = transition_time
 
     def mark_payment_failed(self, payment_id: UUID, occurred_at: datetime) -> None:
         self._require_pending(BookingStatus.PAYMENT_FAILED)
+        transition_time = self._validated_transition_time(occurred_at, "occurred_at")
         self.status = BookingStatus.PAYMENT_FAILED
         self.payment_id = payment_id
-        self.updated_at = _utc(occurred_at, "occurred_at")
+        self.updated_at = transition_time
 
     def cancel(self, cancellation: CancellationRecord) -> CancellationRecord:
         if self.status is BookingStatus.CANCELLED:
@@ -206,6 +210,9 @@ class Booking:
             raise InvalidBookingTransitionError(
                 details={"from": self.status.value, "to": BookingStatus.CANCELLED.value}
             )
+        if self.status is BookingStatus.PENDING_PAYMENT:
+            self._validate_pending_cancellation(cancellation)
+        self._validate_cancellation(cancellation)
         self.status = BookingStatus.CANCELLED
         self.cancellation = cancellation
         self.updated_at = cancellation.cancelled_at
@@ -215,6 +222,65 @@ class Booking:
         if self.status is not BookingStatus.PENDING_PAYMENT:
             raise InvalidBookingTransitionError(
                 details={"from": self.status.value, "to": target.value}
+            )
+
+    def _validated_transition_time(self, occurred_at: datetime, field_name: str) -> datetime:
+        transition_time = _utc(occurred_at, field_name)
+        if transition_time < self.updated_at:
+            raise DomainValidationError(
+                f"{field_name} cannot be earlier than updated_at.",
+                details={
+                    field_name: transition_time.isoformat(),
+                    "updated_at": self.updated_at.isoformat(),
+                },
+            )
+        return transition_time
+
+    def _validate_cancellation(self, cancellation: CancellationRecord) -> None:
+        if cancellation.cancelled_at < self.updated_at:
+            raise DomainValidationError(
+                "cancelled_at cannot be earlier than updated_at.",
+                details={
+                    "cancelled_at": cancellation.cancelled_at.isoformat(),
+                    "updated_at": self.updated_at.isoformat(),
+                },
+            )
+        self.total_price.require_same_currency(cancellation.refund_amount)
+        if cancellation.refund_amount.amount > self.total_price.amount:
+            raise DomainValidationError("Refund amount cannot exceed the booking total price.")
+        expected_amount = self.total_price.percentage(cancellation.refund_percentage)
+        if cancellation.refund_amount != expected_amount:
+            raise DomainValidationError(
+                "Refund amount must match the recorded refund percentage.",
+                details={
+                    "expected_amount": format(expected_amount.amount, "f"),
+                    "actual_amount": format(cancellation.refund_amount.amount, "f"),
+                    "refund_percentage": format(cancellation.refund_percentage, "f"),
+                },
+            )
+        expected_status = (
+            RefundStatus.CALCULATED
+            if cancellation.refund_percentage > 0
+            else RefundStatus.NOT_REQUIRED
+        )
+        if cancellation.refund_status is not expected_status:
+            raise DomainValidationError(
+                "Refund status must match the recorded refund percentage.",
+                details={
+                    "expected_status": expected_status.value,
+                    "actual_status": cancellation.refund_status.value,
+                },
+            )
+
+    @staticmethod
+    def _validate_pending_cancellation(cancellation: CancellationRecord) -> None:
+        if (
+            cancellation.refund_amount.amount != 0
+            or cancellation.refund_percentage != 0
+            or cancellation.refund_status is not RefundStatus.NOT_REQUIRED
+        ):
+            raise DomainValidationError(
+                "A pending-payment cancellation must have a zero refund marked NOT_REQUIRED."
             )
 
 

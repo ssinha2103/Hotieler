@@ -15,9 +15,15 @@ class InMemoryOwnerRepository:
         self._owners: dict[UUID, OwnerAccount] = {}
         self._lock = RLock()
 
-    def save(self, owner: OwnerAccount) -> None:
+    def add(self, owner: OwnerAccount) -> None:
+        snapshot = deepcopy(owner)
         with self._lock:
-            self._owners[owner.id] = deepcopy(owner)
+            if snapshot.id in self._owners:
+                raise DuplicateResourceError(
+                    "An owner with this identifier already exists.",
+                    details={"owner_id": str(snapshot.id)},
+                )
+            self._owners[snapshot.id] = snapshot
 
     def get(self, owner_id: UUID) -> OwnerAccount | None:
         with self._lock:
@@ -31,21 +37,22 @@ class InMemoryPropertyRepository:
         self._room_to_property: dict[UUID, UUID] = {}
         self._lock = RLock()
 
-    def save(self, property_: Property) -> None:
+    def add(self, property_: Property) -> None:
         snapshot = deepcopy(property_)
         with self._lock:
-            previous = self._properties.get(property_.id)
+            if snapshot.id in self._properties:
+                raise DuplicateResourceError(
+                    "A property with this identifier already exists.",
+                    details={"property_id": str(snapshot.id)},
+                )
+
             for room_type in snapshot.room_types:
                 existing_property_id = self._room_to_property.get(room_type.id)
-                if existing_property_id is not None and existing_property_id != snapshot.id:
+                if existing_property_id is not None:
                     raise DuplicateResourceError(
                         "A room type with this identifier already exists.",
                         details={"room_type_id": str(room_type.id)},
                     )
-
-            if previous is not None:
-                for room_type in previous.room_types:
-                    self._room_to_property.pop(room_type.id, None)
 
             self._properties[snapshot.id] = snapshot
             for room_type in snapshot.room_types:

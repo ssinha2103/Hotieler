@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
+from datetime import datetime
 from decimal import Decimal
 from hashlib import sha256
 from uuid import UUID
@@ -57,6 +59,8 @@ from hotieler.domain.specifications import (
 )
 from hotieler.domain.value_objects import StayPeriod
 
+logger = logging.getLogger("hotieler.application")
+
 
 def _not_found(resource: str, identifier: UUID) -> ResourceNotFoundError:
     return ResourceNotFoundError(
@@ -97,7 +101,8 @@ class CatalogService:
             contact_email=command.contact_email,
             created_at=self._clock.now(),
         )
-        self._owners.save(owner)
+        self._owners.add(owner)
+        logger.info("owner_created", extra={"owner_id": str(owner.id)})
         return owner
 
     def create_property(self, command: CreatePropertyCommand) -> Property:
@@ -128,7 +133,14 @@ class CatalogService:
             room_types=room_types,
             created_at=self._clock.now(),
         )
-        self._properties.save(property)
+        self._properties.add(property)
+        logger.info(
+            "property_created",
+            extra={
+                "owner_id": str(property.owner_id),
+                "property_id": str(property.id),
+            },
+        )
         return property
 
 
@@ -258,6 +270,15 @@ class BookingService:
             reserved = _reserved_units(self._bookings.list(), room_type.id, command.stay)
             available = room_type.total_units - reserved
             if available < required_units:
+                logger.warning(
+                    "booking_inventory_conflict",
+                    extra={
+                        "property_id": str(property.id),
+                        "room_type_id": str(room_type.id),
+                        "required_units": required_units,
+                        "available_units": max(available, 0),
+                    },
+                )
                 raise RoomInventoryUnavailableError(
                     details={
                         "room_type_id": str(room_type.id),
@@ -280,6 +301,16 @@ class BookingService:
                 updated_at=now,
             )
             self._bookings.save(booking)
+            logger.info(
+                "booking_inventory_held",
+                extra={
+                    "booking_id": str(booking.id),
+                    "property_id": str(booking.property_id),
+                    "room_type_id": str(booking.room_type_id),
+                    "booking_status": booking.status.value,
+                    "required_units": booking.required_units,
+                },
+            )
             return booking
 
     def get(self, booking_id: UUID) -> Booking:
@@ -316,67 +347,159 @@ class PaymentService:
 
         # Lock order is a public invariant: idempotency key before booking.
         with self._locks.lock(f"idempotency:{idempotency_key}"):
-            existing = self._payments.get_by_idempotency_key(idempotency_key)
-            if existing is not None:
-                if existing.fingerprint != fingerprint:
-                    raise IdempotencyConflictError(details={"idempotency_key": idempotency_key})
-                current_booking = self._get_booking(existing.booking_id)
-                return PaymentCommandResult(
-                    booking=self._booking_at_payment(current_booking, existing),
-                    payment=existing,
-                    replayed=True,
-                )
+            replay = self._replay_if_present(idempotency_key, fingerprint)
+            if replay is not None:
+                return replay
 
             with self._locks.lock(f"booking:{command.booking_id}"):
-                booking = self._get_booking(command.booking_id)
-                if booking.status is not BookingStatus.PENDING_PAYMENT:
-                    raise InvalidBookingTransitionError(
-                        details={
-                            "from": booking.status.value,
-                            "to": "PAYMENT_PROCESSED",
-                        }
-                    )
-                processor = self._processors.get(command.method)
-                if processor is None:
-                    raise UnsupportedPaymentMethodError(details={"method": command.method.value})
-                processor_result = processor.process(
-                    booking.id, booking.total_price, command.mock_outcome
-                )
-                expected_status = (
-                    PaymentStatus.APPROVED
-                    if command.mock_outcome is MockPaymentOutcome.APPROVED
-                    else PaymentStatus.REJECTED
-                )
-                if processor_result.status is not expected_status:
-                    raise DomainValidationError(
-                        "Payment processor returned a result inconsistent with the requested mock outcome."
-                    )
-                payment_id = self._ids.new()
-                booking_status = (
-                    BookingStatus.CONFIRMED
-                    if processor_result.status is PaymentStatus.APPROVED
-                    else BookingStatus.PAYMENT_FAILED
-                )
-                payment = PaymentRecord(
-                    id=payment_id,
-                    booking_id=booking.id,
-                    method=command.method,
-                    amount=booking.total_price,
-                    status=processor_result.status,
-                    mock_outcome=command.mock_outcome,
-                    provider_reference=processor_result.provider_reference,
+                return self._process_new_payment(
+                    command=command,
                     idempotency_key=idempotency_key,
                     fingerprint=fingerprint,
-                    booking_status_after=booking_status,
-                    created_at=processor_result.processed_at,
                 )
-                if processor_result.status is PaymentStatus.APPROVED:
-                    booking.confirm(payment.id, processor_result.processed_at)
-                else:
-                    booking.mark_payment_failed(payment.id, processor_result.processed_at)
-                self._bookings.save(booking)
-                self._payments.save(payment)
-                return PaymentCommandResult(booking=booking, payment=payment, replayed=False)
+
+    def _replay_if_present(
+        self,
+        idempotency_key: str,
+        fingerprint: str,
+    ) -> PaymentCommandResult | None:
+        existing = self._payments.get_by_idempotency_key(idempotency_key)
+        if existing is None:
+            return None
+        if existing.fingerprint != fingerprint:
+            logger.warning(
+                "payment_idempotency_conflict",
+                extra={
+                    "booking_id": str(existing.booking_id),
+                    "payment_id": str(existing.id),
+                },
+            )
+            raise IdempotencyConflictError(details={"idempotency_key": idempotency_key})
+        current_booking = self._get_booking(existing.booking_id)
+        logger.info(
+            "payment_replayed",
+            extra={
+                "booking_id": str(existing.booking_id),
+                "payment_id": str(existing.id),
+                "booking_status": existing.booking_status_after.value,
+                "payment_status": existing.status.value,
+                "payment_method": existing.method.value,
+                "replayed": True,
+            },
+        )
+        return PaymentCommandResult(
+            booking=self._booking_at_payment(current_booking, existing),
+            payment=existing,
+            replayed=True,
+        )
+
+    def _process_new_payment(
+        self,
+        command: ProcessPaymentCommand,
+        idempotency_key: str,
+        fingerprint: str,
+    ) -> PaymentCommandResult:
+        booking = self._get_booking(command.booking_id)
+        self._ensure_payment_is_allowed(booking)
+        processor = self._processor_for(command.method)
+        processor_result = processor.process(
+            booking.id,
+            booking.total_price,
+            command.mock_outcome,
+        )
+        self._ensure_result_matches_outcome(processor_result.status, command.mock_outcome)
+        payment = self._new_payment_record(
+            booking=booking,
+            command=command,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+            status=processor_result.status,
+            provider_reference=processor_result.provider_reference,
+            processed_at=processor_result.processed_at,
+        )
+        self._apply_payment(booking, payment)
+        self._bookings.save(booking)
+        self._payments.save(payment)
+        logger.info(
+            "payment_processed",
+            extra={
+                "booking_id": str(booking.id),
+                "payment_id": str(payment.id),
+                "booking_status": booking.status.value,
+                "payment_status": payment.status.value,
+                "payment_method": payment.method.value,
+                "replayed": False,
+            },
+        )
+        return PaymentCommandResult(booking=booking, payment=payment, replayed=False)
+
+    @staticmethod
+    def _ensure_payment_is_allowed(booking: Booking) -> None:
+        if booking.status is not BookingStatus.PENDING_PAYMENT:
+            raise InvalidBookingTransitionError(
+                details={
+                    "from": booking.status.value,
+                    "to": "PAYMENT_PROCESSED",
+                }
+            )
+
+    def _processor_for(self, method: PaymentMethod) -> PaymentProcessor:
+        processor = self._processors.get(method)
+        if processor is None:
+            raise UnsupportedPaymentMethodError(details={"method": method.value})
+        return processor
+
+    @staticmethod
+    def _ensure_result_matches_outcome(
+        status: PaymentStatus,
+        outcome: MockPaymentOutcome,
+    ) -> None:
+        expected_status = (
+            PaymentStatus.APPROVED
+            if outcome is MockPaymentOutcome.APPROVED
+            else PaymentStatus.REJECTED
+        )
+        if status is not expected_status:
+            raise DomainValidationError(
+                "Payment processor returned a result inconsistent with the requested mock outcome."
+            )
+
+    def _new_payment_record(
+        self,
+        *,
+        booking: Booking,
+        command: ProcessPaymentCommand,
+        idempotency_key: str,
+        fingerprint: str,
+        status: PaymentStatus,
+        provider_reference: str,
+        processed_at: datetime,
+    ) -> PaymentRecord:
+        booking_status = (
+            BookingStatus.CONFIRMED
+            if status is PaymentStatus.APPROVED
+            else BookingStatus.PAYMENT_FAILED
+        )
+        return PaymentRecord(
+            id=self._ids.new(),
+            booking_id=booking.id,
+            method=command.method,
+            amount=booking.total_price,
+            status=status,
+            mock_outcome=command.mock_outcome,
+            provider_reference=provider_reference,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+            booking_status_after=booking_status,
+            created_at=processed_at,
+        )
+
+    @staticmethod
+    def _apply_payment(booking: Booking, payment: PaymentRecord) -> None:
+        if payment.status is PaymentStatus.APPROVED:
+            booking.confirm(payment.id, payment.created_at)
+        else:
+            booking.mark_payment_failed(payment.id, payment.created_at)
 
     @staticmethod
     def fingerprint(command: ProcessPaymentCommand) -> str:
@@ -429,6 +552,20 @@ class CancellationService:
             if booking is None:
                 raise _not_found("Booking", booking_id)
             if booking.status is BookingStatus.CANCELLED:
+                cancellation = booking.cancellation
+                logger.info(
+                    "cancellation_replayed",
+                    extra={
+                        "booking_id": str(booking.id),
+                        "booking_status": booking.status.value,
+                        "refund_status": (
+                            cancellation.refund_status.value
+                            if cancellation is not None
+                            else "UNKNOWN"
+                        ),
+                        "replayed": True,
+                    },
+                )
                 return booking
             now = self._clock.now()
             quote = self._policy.quote(booking, now.date())
@@ -441,4 +578,13 @@ class CancellationService:
                 )
             )
             self._bookings.save(booking)
+            logger.info(
+                "booking_cancelled",
+                extra={
+                    "booking_id": str(booking.id),
+                    "booking_status": booking.status.value,
+                    "refund_status": quote.status.value,
+                    "replayed": False,
+                },
+            )
             return booking
