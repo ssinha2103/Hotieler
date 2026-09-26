@@ -38,7 +38,7 @@ they continue to work after cloning.
 | Ruff formatting/lint, mypy, runtime smoke | 4 gates | **PASS** in the latest Docker-based verification run. |
 | Branch-aware coverage | 95.14% | **PASS** in the latest completed Docker `make verify` run. |
 | Staged publication audit | Tracked/staged paths, whitespace, secret signatures, and confidential-file names | **PASS** before the final commit. |
-| Remote CI | 1 release-evidence item | **PENDING** until the final commit is pushed; no result is inferred. |
+| Remote CI | GitHub Actions Docker verification for implementation commit `fa4193d` | **PASS** - [run 36242516289](https://github.com/ssinha2103/Hotieler/actions/runs/36242516289). |
 
 ## 1. Round overview and delivery contract
 
@@ -199,8 +199,8 @@ This log distinguishes implemented hardening from release evidence. The final Do
 `make verify` run established that **130 tests pass with 95.14% branch-aware coverage**,
 Ruff formatting and lint pass, mypy passes, and bytecode compilation succeeds with zero
 warnings. The isolated runtime smoke gate, staged publication audit, rebuilt Swagger
-inspection, and complete live HTTP walkthrough also pass. Only the remote CI run remains
-repository release evidence to record.
+inspection, complete live HTTP walkthrough, and remote GitHub Actions Docker verification
+also pass.
 
 | Hardening item | Current state | Evidence and remaining gate |
 |---|---|---|
@@ -210,7 +210,7 @@ repository release evidence to record.
 | Stable, non-leaking JSON envelope for unexpected HTTP `500` responses. | **VERIFIED.** | [`unexpected_error_handler`](src/hotieler/api/error_handlers.py); `test_unhandled_exception_returns_safe_envelope_and_is_correlated` passes. |
 | Explicit OpenAPI operation descriptions, operation-specific conflict examples, approved/rejected/replayed payment examples, and grouped business capabilities. | **VERIFIED.** | [`api/routes.py`](src/hotieler/api/routes.py), [`api/schemas.py`](src/hotieler/api/schemas.py); `test_openapi_schema_exposes_the_complete_public_http_contract`, `test_openapi_groups_operations_by_business_capability`, and the Swagger test pass. |
 | Transport-boundary email validation and INR-only public pricing input. | **VERIFIED.** | [`CreateOwnerRequest`](src/hotieler/api/schemas.py) uses an email-format boundary and [`MoneyInput`](src/hotieler/api/schemas.py) restricts public pricing input to INR; the HTTP validation cases are included in the passing suite. |
-| Docker CI runtime smoke: start the service, wait for health, verify health/OpenAPI/demo-data, check non-root execution and one Uvicorn process, preserve failure logs, and tear down. | **VERIFIED LOCALLY; REMOTE CI PENDING.** | [`.github/workflows/ci.yml`](.github/workflows/ci.yml), [`Makefile`](Makefile), and [`scripts/docker-smoke.sh`](scripts/docker-smoke.sh). The isolated smoke gate passes locally; the next pushed GitHub Actions run remains release evidence to collect. |
+| Docker CI runtime smoke: start the service, wait for health, verify health/OpenAPI/demo-data, check non-root execution and one Uvicorn process, preserve failure logs, and tear down. | **VERIFIED LOCALLY AND REMOTELY.** | [`.github/workflows/ci.yml`](.github/workflows/ci.yml), [`Makefile`](Makefile), and [`scripts/docker-smoke.sh`](scripts/docker-smoke.sh). The isolated gate passes locally and in [GitHub Actions run 36242516289](https://github.com/ssinha2103/Hotieler/actions/runs/36242516289). |
 | Refactor `PaymentService` into smaller cohesive helpers without changing lock ordering, replay semantics, or state outcomes; add extension-seam tests. | **VERIFIED.** | [`PaymentService`](src/hotieler/application/services.py); the existing payment/concurrency cases plus `test_alternate_pricing_strategy_plugs_into_search_and_booking`, `test_alternate_cancellation_policy_plugs_into_service`, and `test_custom_registered_payment_processor_plugs_into_service` are in the passing suite. |
 | README refund wording, documentation links, and audit-index discoverability. | **VERIFIED.** | [`README.md`](README.md) links this audit and [`DESIGN.md`](DESIGN.md), distinguishes refund calculation from fund movement, and documents the evaluator workflow. [`DESIGN.md`](DESIGN.md) records the observability and payment-consistency boundaries. |
 | Keep transient `/tmp` content and confidential review renders outside Git and Docker build context. | **PARTIAL - final audit pending.** | [`.gitignore`](.gitignore) and [`.dockerignore`](.dockerignore) contain the guardrails. A final staged-file and Docker-build-context review is still required immediately before publication. |
@@ -256,16 +256,15 @@ security and operational controls appropriate to the deployment.
 | Live HTTP walkthrough | **PASS** for hold, approval, replay, idempotency conflict, cancellation replay, rejection, and inventory release. |
 | Rebuilt Swagger inspection | **PASS** for all business groups and approved/rejected/replayed payment examples. |
 | Staged publication audit | **PASS** with no confidential PDF/render path or common private-key/token signature staged. |
+| Remote GitHub Actions | **PASS** for Docker verification and isolated runtime smoke on implementation commit `fa4193d`; [run 36242516289](https://github.com/ssinha2103/Hotieler/actions/runs/36242516289). |
 
-### Genuinely open evidence
+### External and human evidence
 
-These are the remaining items, rather than hidden feature work:
+These are submission responsibilities that source code and CI cannot establish:
 
-1. Push the final commit and retain the successful GitHub Actions run as remote CI
-   evidence.
-2. Retain the recruiter approval for the Python/FastAPI exception with the submission;
+1. Retain the recruiter approval for the Python/FastAPI exception with the submission;
    source code cannot turn the literal Java/Spring requirement into complete compliance.
-3. The take-home elapsed-time constraint, candidate authorship, and live interview
+2. The take-home elapsed-time constraint, candidate authorship, and live interview
    readiness remain human-proven submission facts, not repository-verifiable claims.
 
 Complete the open repository gates with Docker-backed commands:
