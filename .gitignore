@@ -1,0 +1,31 @@
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.python-version
+.venv/
+build/
+dist/
+
+# Tests and static analysis
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local environment overrides
+.env
+.env.*
+!.env.example

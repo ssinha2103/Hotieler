@@ -1,0 +1,11 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    environment:
+      HOTIELER_SEED_DEMO_DATA: "${HOTIELER_SEED_DEMO_DATA:-true}"
+    ports:
+      - "8000:8000"
+    restart: "no"
