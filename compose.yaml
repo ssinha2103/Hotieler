@@ -7,5 +7,5 @@ services:
     environment:
       HOTIELER_LOG_LEVEL: "${HOTIELER_LOG_LEVEL:-INFO}"
     ports:
-      - "${HOTIELER_PORT:-8000}:8000"
+      - "127.0.0.1:${HOTIELER_PORT:-8000}:8000"
     restart: "no"

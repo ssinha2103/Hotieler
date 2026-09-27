@@ -4,11 +4,12 @@ set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SERVICE="api"
-readonly BASE_URL="${HOTIELER_BASE_URL:-http://localhost:8000}"
-readonly HEALTH_URL="${BASE_URL}/health"
-readonly SWAGGER_URL="${BASE_URL}/docs"
-readonly OPENAPI_URL="${BASE_URL}/openapi.json"
-readonly START_TIMEOUT_SECONDS="${HOTIELER_START_TIMEOUT_SECONDS:-90}"
+HOST_PORT="${HOTIELER_PORT:-8000}"
+BASE_URL="${HOTIELER_BASE_URL:-}"
+HEALTH_URL=""
+SWAGGER_URL=""
+OPENAPI_URL=""
+START_TIMEOUT_SECONDS="${HOTIELER_START_TIMEOUT_SECONDS:-90}"
 
 ACTION="start"
 ACTION_WAS_SET=0
@@ -18,7 +19,7 @@ usage() {
   cat <<'EOF'
 Usage: ./run.sh [action] [options]
 
-Run Hotieler entirely with Docker Compose. The default action is "start".
+Run the Hotel Booking Service entirely with Docker Compose. The default action is "start".
 
 Actions:
   start       Build and start the API in the background, wait for health,
@@ -38,7 +39,8 @@ Options:
   -h, --help  Show this help message.
 
 Environment variables:
-  HOTIELER_BASE_URL                Printed browser URL (default: http://localhost:8000)
+  HOTIELER_PORT                    Loopback host port (default: 8000)
+  HOTIELER_BASE_URL                Browser URL override (default: derived from HOTIELER_PORT)
   HOTIELER_START_TIMEOUT_SECONDS   Health wait timeout in seconds (default: 90)
 
 Examples:
@@ -94,14 +96,38 @@ require_docker() {
 }
 
 validate_configuration() {
+  case "$HOST_PORT" in
+    '' | *[!0-9]*)
+      fail "HOTIELER_PORT must be an integer between 1 and 65535."
+      ;;
+  esac
+  HOST_PORT=$((10#${HOST_PORT}))
+  if (( HOST_PORT < 1 || HOST_PORT > 65535 )); then
+    fail "HOTIELER_PORT must be an integer between 1 and 65535."
+  fi
+
   case "$START_TIMEOUT_SECONDS" in
     '' | *[!0-9]*)
       fail "HOTIELER_START_TIMEOUT_SECONDS must be a positive integer."
       ;;
-    0)
-      fail "HOTIELER_START_TIMEOUT_SECONDS must be greater than zero."
-      ;;
   esac
+  START_TIMEOUT_SECONDS=$((10#${START_TIMEOUT_SECONDS}))
+  if (( START_TIMEOUT_SECONDS == 0 )); then
+    fail "HOTIELER_START_TIMEOUT_SECONDS must be greater than zero."
+  fi
+
+  export HOTIELER_PORT="$HOST_PORT"
+  if [[ -z "$BASE_URL" ]]; then
+    BASE_URL="http://127.0.0.1:${HOST_PORT}"
+  fi
+  BASE_URL="${BASE_URL%/}"
+  case "$BASE_URL" in
+    http://* | https://*) ;;
+    *) fail "HOTIELER_BASE_URL must start with http:// or https://." ;;
+  esac
+  HEALTH_URL="${BASE_URL}/health"
+  SWAGGER_URL="${BASE_URL}/docs"
+  OPENAPI_URL="${BASE_URL}/openapi.json"
 
   docker compose config --quiet
 }
@@ -127,7 +153,7 @@ wait_for_health() {
   local id=""
   local health=""
 
-  printf 'Waiting for Hotieler to become healthy'
+  printf 'Waiting for the Hotel Booking Service to become healthy'
   while (( SECONDS < deadline )); do
     id="$(container_id)"
     if [[ -n "$id" ]]; then
@@ -155,7 +181,7 @@ wait_for_health() {
 }
 
 print_urls() {
-  printf '\nHotieler is ready:\n'
+  printf '\nHotel Booking Service is ready:\n'
   printf '  Health:  %s\n' "$HEALTH_URL"
   printf '  Swagger: %s\n' "$SWAGGER_URL"
   printf '  OpenAPI: %s\n\n' "$OPENAPI_URL"
@@ -206,7 +232,7 @@ start_service() {
 
 stop_service() {
   docker compose down --remove-orphans
-  printf 'Hotieler stopped.\n'
+  printf 'Hotel Booking Service stopped.\n'
 }
 
 show_status() {

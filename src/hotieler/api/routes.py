@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date
 from decimal import Decimal
 from typing import Annotated, Any, cast
 from uuid import UUID
@@ -10,12 +9,14 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Header, Path, Query, Request, status
 
 from hotieler.api.schemas import (
+    AmenityLabel,
     AvailabilityResponse,
     BookingResponse,
     CreateBookingRequest,
     CreateOwnerRequest,
     CreatePropertyRequest,
     ErrorResponse,
+    IsoDate,
     OwnerResponse,
     PaymentResultResponse,
     ProcessPaymentRequest,
@@ -323,8 +324,8 @@ def create_property(
 def search_properties(
     request: Request,
     city: Annotated[str, Query(min_length=1, max_length=120)],
-    check_in: Annotated[date, Query()],
-    check_out: Annotated[date, Query()],
+    check_in: Annotated[IsoDate, Query()],
+    check_out: Annotated[IsoDate, Query()],
     guest_count: Annotated[int, Query(gt=0, le=10_000)],
     locality: Annotated[str | None, Query(min_length=1, max_length=120)] = None,
     min_price: Annotated[
@@ -335,7 +336,7 @@ def search_properties(
         Decimal | None,
         Query(ge=0, max_digits=14, decimal_places=2),
     ] = None,
-    amenities: Annotated[list[str] | None, Query()] = None,
+    amenities: Annotated[list[AmenityLabel] | None, Query(max_length=100)] = None,
     min_star_rating: Annotated[Decimal | None, Query(ge=1, le=5)] = None,
 ) -> list[AvailabilityResponse]:
     query = SearchQuery(

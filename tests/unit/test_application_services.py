@@ -28,6 +28,7 @@ from hotieler.domain.entities import Booking, OwnerAccount, Property
 from hotieler.domain.enums import BookingStatus, MockPaymentOutcome, PaymentMethod
 from hotieler.domain.errors import (
     CancellationNotAllowedError,
+    DomainValidationError,
     IdempotencyConflictError,
     InvalidBookingTransitionError,
     PropertyRoomMismatchError,
@@ -240,6 +241,20 @@ def test_search_applies_all_filters_and_deterministic_order(services: Services) 
     assert [result.property.name for result in results] == ["Alpha", "Zulu"]
     assert all(result.required_units == 2 for result in results)
     assert all(result.total_price == Money(Decimal("4000")) for result in results)
+
+
+@pytest.mark.parametrize(
+    "rating",
+    [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")],
+)
+def test_search_query_rejects_non_finite_minimum_star_rating(rating: Decimal) -> None:
+    with pytest.raises(DomainValidationError, match="star rating must be finite"):
+        SearchQuery(
+            city="Bengaluru",
+            stay=STAY,
+            guest_count=1,
+            min_star_rating=rating,
+        )
 
 
 def test_search_excludes_only_overlapping_active_inventory(services: Services) -> None:

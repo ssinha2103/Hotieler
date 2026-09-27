@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any, Final
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StrictInt,
+    StringConstraints,
+    field_validator,
+)
 
 from hotieler.application.models import AvailabilityQuote, PaymentCommandResult
 from hotieler.domain.entities import (
@@ -26,6 +36,22 @@ from hotieler.domain.enums import (
     RefundStatus,
 )
 from hotieler.domain.value_objects import Money
+
+AmenityLabel = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=120),
+]
+
+_ISO_DATE_PATTERN: Final = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _require_iso_date_string(value: Any) -> str:
+    if not isinstance(value, str) or _ISO_DATE_PATTERN.fullmatch(value) is None:
+        raise ValueError("Date must be an ISO string in YYYY-MM-DD format.")
+    return value
+
+
+IsoDate = Annotated[date, BeforeValidator(_require_iso_date_string)]
 
 
 class _RequestModel(BaseModel):
@@ -79,10 +105,10 @@ class OwnerResponse(BaseModel):
 
 class RoomTypeRequest(_RequestModel):
     name: str = Field(min_length=1, max_length=120)
-    total_units: int = Field(gt=0, le=10_000)
-    guests_per_unit: int = Field(gt=0, le=100)
+    total_units: StrictInt = Field(gt=0, le=10_000)
+    guests_per_unit: StrictInt = Field(gt=0, le=100)
     nightly_rate: MoneyInput
-    amenities: list[str] = Field(default_factory=list, max_length=100)
+    amenities: list[AmenityLabel] = Field(default_factory=list, max_length=100)
 
 
 class CreatePropertyRequest(_RequestModel):
@@ -115,7 +141,7 @@ class CreatePropertyRequest(_RequestModel):
     locality: str = Field(min_length=1, max_length=120)
     address: str = Field(min_length=1, max_length=500)
     star_rating: Decimal = Field(ge=1, le=5, decimal_places=1)
-    amenities: list[str] = Field(default_factory=list, max_length=100)
+    amenities: list[AmenityLabel] = Field(default_factory=list, max_length=100)
     room_types: list[RoomTypeRequest] = Field(min_length=1, max_length=100)
 
 
@@ -172,9 +198,9 @@ class CreateBookingRequest(_RequestModel):
 
     property_id: UUID
     room_type_id: UUID
-    check_in: date
-    check_out: date
-    guest_count: int = Field(gt=0, le=10_000)
+    check_in: IsoDate
+    check_out: IsoDate
+    guest_count: StrictInt = Field(gt=0, le=10_000)
 
 
 class StayResponse(BaseModel):

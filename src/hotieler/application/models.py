@@ -2,11 +2,12 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from uuid import UUID
 
 from hotieler.domain.entities import Booking, PaymentRecord, Property, RoomType
 from hotieler.domain.enums import MockPaymentOutcome, PaymentMethod, PaymentStatus
+from hotieler.domain.errors import DomainValidationError
 from hotieler.domain.value_objects import Money, StayPeriod
 
 
@@ -47,6 +48,21 @@ class SearchQuery:
     max_price: Money | None = None
     amenities: frozenset[str] = field(default_factory=frozenset)
     min_star_rating: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        if self.min_star_rating is None:
+            return
+        try:
+            rating = (
+                self.min_star_rating
+                if isinstance(self.min_star_rating, Decimal)
+                else Decimal(str(self.min_star_rating))
+            )
+        except (DecimalException, ValueError) as exc:
+            raise DomainValidationError("Minimum star rating must be numeric.") from exc
+        if not rating.is_finite():
+            raise DomainValidationError("Minimum star rating must be finite.")
+        object.__setattr__(self, "min_star_rating", rating)
 
 
 @dataclass(frozen=True, slots=True)

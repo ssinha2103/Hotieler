@@ -39,13 +39,16 @@ class Money:
     currency: str = "INR"
 
     def __post_init__(self) -> None:
+        raw_amount = _decimal(self.amount)
+        if raw_amount < 0:
+            raise DomainValidationError("Money amount cannot be negative.")
         amount = _decimal_operation(
-            lambda: _decimal(self.amount).quantize(_CENT, rounding=ROUND_HALF_UP),
+            lambda: raw_amount.quantize(_CENT, rounding=ROUND_HALF_UP),
             "Money amount has unsupported precision or magnitude.",
         )
+        if not amount.is_finite():
+            raise DomainValidationError("Money amount has unsupported precision or magnitude.")
         currency = self.currency.strip().upper()
-        if amount < 0:
-            raise DomainValidationError("Money amount cannot be negative.")
         if len(currency) != 3 or not currency.isalpha():
             raise DomainValidationError("Currency must be a three-letter code.")
         object.__setattr__(self, "amount", amount)

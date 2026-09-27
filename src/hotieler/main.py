@@ -38,7 +38,7 @@ def create_app(container: AppContainer | None = None) -> FastAPI:
     configure_logging()
     resolved_container = container or build_container()
     app = FastAPI(
-        title="Hotieler Hotel Booking API",
+        title="Hotel Booking API",
         version="1.0.0",
         docs_url="/docs",
         openapi_url="/openapi.json",

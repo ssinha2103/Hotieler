@@ -13,7 +13,7 @@ def test_swagger_ui_is_available_and_uses_the_public_openapi_schema() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert "Swagger UI" in response.text
-    assert "Hotieler Hotel Booking API" in response.text
+    assert "Hotel Booking API" in response.text
     assert "url: '/openapi.json'" in response.text
 
 
@@ -26,7 +26,7 @@ def test_openapi_schema_exposes_the_complete_public_http_contract() -> None:
     assert response.headers["content-type"].startswith("application/json")
     schema = response.json()
     assert schema["info"] == {
-        "title": "Hotieler Hotel Booking API",
+        "title": "Hotel Booking API",
         "description": (
             "Backend-only hotel discovery, booking, deterministic mock payment, "
             "and cancellation service. All data is process-local and in memory."
@@ -127,5 +127,5 @@ def test_redoc_is_available_as_a_secondary_contract_view() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert "ReDoc" in response.text
-    assert "Hotieler Hotel Booking API" in response.text
+    assert "Hotel Booking API" in response.text
     assert 'spec-url="/openapi.json"' in response.text

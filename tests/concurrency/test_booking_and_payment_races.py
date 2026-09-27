@@ -24,6 +24,7 @@ from hotieler.domain.enums import BookingStatus, MockPaymentOutcome, PaymentMeth
 from hotieler.domain.errors import (
     ConflictError,
     DuplicateResourceError,
+    InvalidBookingTransitionError,
     RoomInventoryUnavailableError,
 )
 from hotieler.domain.policies import StandardPricingStrategy
@@ -73,6 +74,44 @@ class _NoOpKeyedLockManager:
     def lock(self, key: str) -> Iterator[None]:
         del key
         yield
+
+
+class _BookingLockBypassKeyedLockManager:
+    """Keep idempotency serialization while selectively disabling booking locks."""
+
+    def __init__(self) -> None:
+        self._delegate = InMemoryKeyedLockManager()
+        self._guard = Lock()
+        self._booking_bypass_count = 0
+        self._idempotency_lock_count = 0
+
+    @contextmanager
+    def lock(self, key: str) -> Iterator[None]:
+        if key.startswith("booking:"):
+            with self._guard:
+                self._booking_bypass_count += 1
+            yield
+            return
+
+        if key.startswith("idempotency:"):
+            with self._guard:
+                self._idempotency_lock_count += 1
+        with self._delegate.lock(key):
+            yield
+
+    @property
+    def booking_bypass_count(self) -> int:
+        with self._guard:
+            return self._booking_bypass_count
+
+    @property
+    def idempotency_lock_count(self) -> int:
+        with self._guard:
+            return self._idempotency_lock_count
+
+    @property
+    def active_key_count(self) -> int:
+        return self._delegate.active_key_count
 
 
 class _FirstListBlockingBookingRepository:
@@ -190,6 +229,39 @@ class _BarrierGetBookingRepository:
 
     def list(self) -> list[Booking]:
         return self._delegate.list()
+
+
+class _FirstGetBlockingBookingRepository:
+    """Hold the first payment call after reading its pending-booking snapshot."""
+
+    def __init__(self, delegate: BookingRepository) -> None:
+        self._delegate = delegate
+        self._guard = Lock()
+        self._get_calls = 0
+        self.first_get_entered = Event()
+        self.release_first_get = Event()
+
+    def save(self, booking: Booking) -> None:
+        self._delegate.save(booking)
+
+    def get(self, booking_id: UUID) -> Booking | None:
+        snapshot = self._delegate.get(booking_id)
+        with self._guard:
+            self._get_calls += 1
+            is_first = self._get_calls == 1
+        if is_first:
+            self.first_get_entered.set()
+            if not self.release_first_get.wait(_WAIT_TIMEOUT_SECONDS):
+                raise AssertionError("Timed out while holding the pending-booking snapshot.")
+        return snapshot
+
+    def list(self) -> list[Booking]:
+        return self._delegate.list()
+
+    @property
+    def get_calls(self) -> int:
+        with self._guard:
+            return self._get_calls
 
 
 def _container_with_one_room() -> tuple[AppContainer, CreateBookingCommand]:
@@ -366,6 +438,124 @@ def test_concurrent_same_key_payment_is_processed_once_and_replayed() -> None:
     assert all(result.booking.status is BookingStatus.CONFIRMED for result in results)
     assert repository.lookup_calls == 2
     assert processor.process_count == 1
+    assert locks.active_key_count == 0
+
+
+def test_distinct_payment_keys_are_serialized_by_the_booking_lock() -> None:
+    container, booking_command = _container_with_one_room()
+    booking = container.booking_service.create(booking_command)
+    repository = _FirstGetBlockingBookingRepository(container.booking_repository)
+    booking_lock_key = f"booking:{booking.id}"
+    locks = _ObservedKeyedLockManager(booking_lock_key)
+    service, processor = _payment_service(
+        container,
+        repository,
+        container.payment_repository,
+        locks,
+    )
+    commands = tuple(
+        ProcessPaymentCommand(
+            booking_id=booking.id,
+            method=PaymentMethod.WALLET,
+            mock_outcome=MockPaymentOutcome.APPROVED,
+            idempotency_key=key,
+        )
+        for key in ("distinct-payment-key-1", "distinct-payment-key-2")
+    )
+
+    def attempt(
+        command: ProcessPaymentCommand,
+    ) -> PaymentCommandResult | InvalidBookingTransitionError:
+        try:
+            return service.process(command)
+        except InvalidBookingTransitionError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(attempt, commands[0])
+        assert repository.first_get_entered.wait(_WAIT_TIMEOUT_SECONDS)
+        second = executor.submit(attempt, commands[1])
+        try:
+            assert locks.second_attempted.wait(_WAIT_TIMEOUT_SECONDS)
+            assert locks.watched_attempts == 2
+            assert repository.get_calls == 1
+            assert processor.process_count == 0
+        finally:
+            repository.release_first_get.set()
+        results = [
+            first.result(timeout=_WAIT_TIMEOUT_SECONDS),
+            second.result(timeout=_WAIT_TIMEOUT_SECONDS),
+        ]
+
+    successes = [result for result in results if isinstance(result, PaymentCommandResult)]
+    conflicts = [result for result in results if isinstance(result, InvalidBookingTransitionError)]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert conflicts[0].details == {
+        "from": BookingStatus.CONFIRMED.value,
+        "to": "PAYMENT_PROCESSED",
+    }
+    assert successes[0].replayed is False
+    assert processor.process_count == 1
+    assert repository.get_calls == 2
+
+    persisted = [
+        container.payment_repository.get_by_idempotency_key(command.idempotency_key)
+        for command in commands
+    ]
+    assert sum(payment is not None for payment in persisted) == 1
+    final_booking = container.booking_repository.get(booking.id)
+    assert final_booking is not None
+    assert final_booking.status is BookingStatus.CONFIRMED
+    assert final_booking.payment_id == successes[0].payment.id
+    assert locks.active_key_count == 0
+
+
+def test_distinct_payment_keys_double_process_when_only_booking_lock_is_bypassed() -> None:
+    container, booking_command = _container_with_one_room()
+    booking = container.booking_service.create(booking_command)
+    repository = _BarrierGetBookingRepository(container.booking_repository)
+    locks = _BookingLockBypassKeyedLockManager()
+    service, processor = _payment_service(
+        container,
+        repository,
+        container.payment_repository,
+        locks,
+    )
+    commands = tuple(
+        ProcessPaymentCommand(
+            booking_id=booking.id,
+            method=PaymentMethod.WALLET,
+            mock_outcome=MockPaymentOutcome.APPROVED,
+            idempotency_key=key,
+        )
+        for key in ("unsafe-distinct-payment-key-1", "unsafe-distinct-payment-key-2")
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(service.process, command) for command in commands]
+        results = [future.result(timeout=_WAIT_TIMEOUT_SECONDS) for future in futures]
+
+    assert all(result.replayed is False for result in results)
+    assert all(result.booking.status is BookingStatus.CONFIRMED for result in results)
+    assert processor.process_count == 2
+    assert locks.booking_bypass_count == 2
+    assert locks.idempotency_lock_count == 2
+
+    persisted = [
+        container.payment_repository.get_by_idempotency_key(command.idempotency_key)
+        for command in commands
+    ]
+    assert all(payment is not None for payment in persisted)
+    payment_ids = {result.payment.id for result in results}
+    assert len(payment_ids) == 2
+    assert {payment.id for payment in persisted if payment is not None} == payment_ids
+
+    final_booking = container.booking_repository.get(booking.id)
+    assert final_booking is not None
+    assert final_booking.status is BookingStatus.CONFIRMED
+    assert final_booking.payment_id in payment_ids
+    assert len(payment_ids - {final_booking.payment_id}) == 1
     assert locks.active_key_count == 0
 
 

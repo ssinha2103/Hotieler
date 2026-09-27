@@ -23,6 +23,8 @@ def test_money_arithmetic_preserves_currency() -> None:
 def test_money_rejects_negative_non_finite_and_currency_mismatch() -> None:
     with pytest.raises(DomainValidationError):
         Money(Decimal("-0.01"))
+    with pytest.raises(DomainValidationError, match="cannot be negative"):
+        Money(Decimal("-0.001"))
     with pytest.raises(DomainValidationError):
         Money(Decimal("NaN"))
     with pytest.raises(DomainValidationError):
@@ -39,6 +41,17 @@ def test_money_converts_quantize_failure_to_domain_validation_error() -> None:
         Money(Decimal("1e28"))
 
     assert isinstance(captured.value.__cause__, InvalidOperation)
+
+
+def test_money_rejects_non_finite_quantize_result_when_decimal_trap_is_disabled() -> None:
+    with localcontext() as context:
+        context.prec = 1
+        context.traps[InvalidOperation] = False
+        with pytest.raises(
+            DomainValidationError,
+            match="unsupported precision or magnitude",
+        ):
+            Money(Decimal("99.99"))
 
 
 def test_money_converts_arithmetic_decimal_failure_to_domain_validation_error() -> None:

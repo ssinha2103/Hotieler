@@ -139,6 +139,8 @@ class CancellationRecord:
             )
         except (InvalidOperation, ValueError) as exc:
             raise DomainValidationError("Refund percentage must be numeric.") from exc
+        if not percentage.is_finite():
+            raise DomainValidationError("Refund percentage must be finite.")
         if percentage < 0 or percentage > 100:
             raise DomainValidationError("Refund percentage must be between 0 and 100.")
         object.__setattr__(self, "refund_percentage", percentage)
@@ -169,10 +171,10 @@ class Booking:
         self.updated_at = _utc(self.updated_at, "updated_at")
         if self.updated_at < self.created_at:
             raise DomainValidationError("updated_at cannot be earlier than created_at.")
-        if (
-            self.status in {BookingStatus.CONFIRMED, BookingStatus.PAYMENT_FAILED}
-            and self.payment_id is None
-        ):
+        if self.status in {
+            BookingStatus.CONFIRMED,
+            BookingStatus.PAYMENT_FAILED,
+        } and not isinstance(self.payment_id, UUID):
             raise DomainValidationError("A processed booking requires a payment identifier.")
         if self.status is BookingStatus.PENDING_PAYMENT and self.payment_id is not None:
             raise DomainValidationError("A pending booking cannot have a payment identifier.")
@@ -189,16 +191,18 @@ class Booking:
 
     def confirm(self, payment_id: UUID, occurred_at: datetime) -> None:
         self._require_pending(BookingStatus.CONFIRMED)
+        payment_identifier = self._validated_payment_identifier(payment_id)
         transition_time = self._validated_transition_time(occurred_at, "occurred_at")
         self.status = BookingStatus.CONFIRMED
-        self.payment_id = payment_id
+        self.payment_id = payment_identifier
         self.updated_at = transition_time
 
     def mark_payment_failed(self, payment_id: UUID, occurred_at: datetime) -> None:
         self._require_pending(BookingStatus.PAYMENT_FAILED)
+        payment_identifier = self._validated_payment_identifier(payment_id)
         transition_time = self._validated_transition_time(occurred_at, "occurred_at")
         self.status = BookingStatus.PAYMENT_FAILED
-        self.payment_id = payment_id
+        self.payment_id = payment_identifier
         self.updated_at = transition_time
 
     def cancel(self, cancellation: CancellationRecord) -> CancellationRecord:
@@ -223,6 +227,12 @@ class Booking:
             raise InvalidBookingTransitionError(
                 details={"from": self.status.value, "to": target.value}
             )
+
+    @staticmethod
+    def _validated_payment_identifier(payment_id: object) -> UUID:
+        if not isinstance(payment_id, UUID):
+            raise DomainValidationError("Payment identifier must be a UUID.")
+        return payment_id
 
     def _validated_transition_time(self, occurred_at: datetime, field_name: str) -> datetime:
         transition_time = _utc(occurred_at, field_name)

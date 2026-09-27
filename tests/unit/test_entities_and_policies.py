@@ -69,6 +69,22 @@ def test_booking_owns_confirmation_and_failed_payment_transitions() -> None:
 
 
 @pytest.mark.parametrize("transition", ["confirm", "mark_payment_failed"])
+@pytest.mark.parametrize("payment_id", [None, "not-a-uuid"])
+def test_booking_payment_transitions_require_uuid_without_mutation(
+    transition: str,
+    payment_id: object,
+) -> None:
+    value = booking()
+
+    with pytest.raises(DomainValidationError, match="identifier must be a UUID"):
+        getattr(value, transition)(payment_id, NOW)
+
+    assert value.status is BookingStatus.PENDING_PAYMENT
+    assert value.payment_id is None
+    assert value.updated_at == NOW
+
+
+@pytest.mark.parametrize("transition", ["confirm", "mark_payment_failed"])
 def test_booking_payment_transition_timestamp_cannot_move_backwards(transition: str) -> None:
     value = booking()
 
@@ -107,6 +123,22 @@ def test_booking_cancellation_is_repeat_safe_at_entity_boundary() -> None:
     assert first == second
     assert value.status is BookingStatus.CANCELLED
     assert not value.reserves_inventory
+
+
+@pytest.mark.parametrize(
+    "percentage",
+    [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")],
+)
+def test_cancellation_record_rejects_non_finite_refund_percentage(
+    percentage: Decimal,
+) -> None:
+    with pytest.raises(DomainValidationError, match="percentage must be finite"):
+        CancellationRecord(
+            cancelled_at=NOW,
+            refund_amount=Money.zero(),
+            refund_percentage=percentage,
+            refund_status=RefundStatus.NOT_REQUIRED,
+        )
 
 
 def test_cancellation_timestamp_cannot_predate_current_booking_update() -> None:

@@ -45,10 +45,20 @@ healthy, and opens Swagger when a desktop browser opener is available.
 
 | Resource | URL |
 |---|---|
-| Swagger UI | <http://localhost:8000/docs> |
-| ReDoc | <http://localhost:8000/redoc> |
-| OpenAPI JSON | <http://localhost:8000/openapi.json> |
-| Health check | <http://localhost:8000/health> |
+| Swagger UI | <http://127.0.0.1:8000/docs> |
+| ReDoc | <http://127.0.0.1:8000/redoc> |
+| OpenAPI JSON | <http://127.0.0.1:8000/openapi.json> |
+| Health check | <http://127.0.0.1:8000/health> |
+
+The published API port binds to loopback only. To use another port, set
+`HOTIELER_PORT`; the launcher derives every printed and opened URL from it:
+
+```bash
+HOTIELER_PORT=9000 ./run.sh --no-open
+```
+
+`HOTIELER_BASE_URL` is an optional browser-URL override for proxies or unusual local
+setups. `HOTIELER_START_TIMEOUT_SECONDS` changes the positive-integer startup timeout.
 
 Useful launcher commands:
 
@@ -251,7 +261,10 @@ inside Docker.
 
 Stays use half-open calendar intervals and must begin today or later. Search price filters
 apply to nightly rate; amenity matching is normalized, case-insensitive, and all-of.
-Amounts use `Decimal` and travel as strings. Pending-payment holds do not expire.
+Amounts use `Decimal`; response amounts are strings, while monetary request fields accept
+JSON numbers or decimal strings. Pending-payment holds do not expire, so a booking that
+remains pending can still be paid after its stay window; a production system would expire
+the hold and apply an explicit no-show policy.
 
 The default cancellation policy calculates 100% at least two days before check-in, 50%
 one day before, and 0% on check-in day; later cancellation is rejected. This is only a
