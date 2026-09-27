@@ -141,6 +141,119 @@ def test_decimal_step_constraints_are_enforced_at_the_http_boundary() -> None:
         assert error["details"]["errors"][0]["loc"][-1] == parameter
 
 
+@pytest.mark.parametrize(
+    "invalid_rating",
+    [
+        "1e27",
+        "-1e27",
+        "1234567890123456789012345678",
+        "1e9999",
+        "NaN",
+        "Infinity",
+        "4.55",
+        "4.5000000000000000000000000001",
+    ],
+)
+def test_adversarial_star_ratings_return_validation_errors(invalid_rating: str) -> None:
+    client = _client()
+    payload = _property_payload()
+    payload["star_rating"] = invalid_rating
+
+    property_response = client.post(
+        f"/api/v1/owners/{_owner_id(client)}/properties",
+        json=payload,
+    )
+    _assert_error(property_response, 422, "REQUEST_VALIDATION_ERROR")
+
+    search_response = client.get(
+        "/api/v1/properties/search",
+        params={
+            "city": "Bengaluru",
+            "check_in": "2026-01-15",
+            "check_out": "2026-01-17",
+            "guest_count": "2",
+            "min_star_rating": invalid_rating,
+        },
+    )
+    _assert_error(search_response, 422, "REQUEST_VALIDATION_ERROR")
+
+
+@pytest.mark.parametrize(
+    "invalid_rate",
+    ["1e-999999999", "1.2300000000000000000000000001"],
+)
+def test_nightly_rates_reject_underflow_and_long_tail_precision(invalid_rate: str) -> None:
+    client = _client()
+    payload = _property_payload()
+    payload["room_types"][0]["nightly_rate"]["amount"] = invalid_rate
+
+    response = client.post(
+        f"/api/v1/owners/{_owner_id(client)}/properties",
+        json=payload,
+    )
+
+    _assert_error(response, 422, "REQUEST_VALIDATION_ERROR")
+
+
+@pytest.mark.parametrize("parameter", ["min_price", "max_price"])
+@pytest.mark.parametrize(
+    "invalid_price",
+    [
+        "1e-999999999",
+        "1.2300000000000000000000000001",
+        "1e9999",
+        "NaN",
+        "Infinity",
+        "not-a-decimal",
+    ],
+)
+def test_search_prices_reject_unsafe_decimal_values(
+    parameter: str,
+    invalid_price: str,
+) -> None:
+    client = _client()
+
+    response = client.get(
+        "/api/v1/properties/search",
+        params={
+            "city": "Bengaluru",
+            "check_in": "2026-01-15",
+            "check_out": "2026-01-17",
+            "guest_count": "2",
+            parameter: invalid_price,
+        },
+    )
+
+    _assert_error(response, 422, "REQUEST_VALIDATION_ERROR")
+
+
+def test_effective_decimal_scale_allows_zero_and_trailing_zeroes() -> None:
+    client = _client()
+    payload = _property_payload()
+    payload["star_rating"] = "4.500000"
+    payload["room_types"][0]["nightly_rate"]["amount"] = "2500.000000"
+
+    property_response = client.post(
+        f"/api/v1/owners/{_owner_id(client)}/properties",
+        json=payload,
+    )
+    assert property_response.status_code == 201, property_response.text
+
+    search_response = client.get(
+        "/api/v1/properties/search",
+        params={
+            "city": "Bengaluru",
+            "check_in": "2026-01-15",
+            "check_out": "2026-01-17",
+            "guest_count": "2",
+            "min_price": "0.000000",
+            "max_price": "2500.000000",
+            "min_star_rating": "4.500000",
+        },
+    )
+    assert search_response.status_code == 200, search_response.text
+
+
 @pytest.mark.parametrize("field", ["check_in", "check_out"])
 @pytest.mark.parametrize("invalid_value", [1768435200, 1768608000.0, True])
 def test_booking_dates_require_iso_date_strings(field: str, invalid_value: Any) -> None:

@@ -258,9 +258,9 @@ make smoke             # isolated container health/OpenAPI/runtime assertions
 Every Python command above runs in a disposable Docker container. `make smoke` additionally
 proves that the built API becomes healthy, serves OpenAPI, runs as a non-root user, and has
 exactly one Uvicorn process. Deterministically synchronized concurrency tests cover
-overselling, same-key payment replay, payment-versus-cancellation races, and inventory
-reuse after rejection or cancellation. `make lock` refreshes the committed `uv.lock`
-inside Docker.
+overselling, same-key payment replay, and payment-versus-cancellation races. Separate
+service and HTTP tests verify inventory reuse after rejection or cancellation. `make lock`
+refreshes the committed `uv.lock` inside Docker.
 
 ## Important assumptions
 

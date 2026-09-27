@@ -4,10 +4,23 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, DecimalException
+from typing import cast
 
 from hotieler.domain.errors import DomainValidationError
 
 _CENT = Decimal("0.01")
+
+
+def effective_decimal_places(value: Decimal) -> int:
+    """Return scale after insignificant trailing zeroes have been removed."""
+
+    if value.is_zero():
+        return 0
+    decimal_tuple = value.as_tuple()
+    exponent = cast(int, decimal_tuple.exponent)
+    coefficient = "".join(str(digit) for digit in decimal_tuple.digits)
+    trailing_zeroes = len(coefficient) - len(coefficient.rstrip("0"))
+    return max(0, -exponent - trailing_zeroes)
 
 
 def _decimal(value: Decimal | int | str) -> Decimal:

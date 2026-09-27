@@ -8,7 +8,7 @@ from uuid import UUID
 from hotieler.domain.entities import Booking, PaymentRecord, Property, RoomType
 from hotieler.domain.enums import MockPaymentOutcome, PaymentMethod, PaymentStatus
 from hotieler.domain.errors import DomainValidationError
-from hotieler.domain.value_objects import Money, StayPeriod
+from hotieler.domain.value_objects import Money, StayPeriod, effective_decimal_places
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,10 +58,12 @@ class SearchQuery:
                 if isinstance(self.min_star_rating, Decimal)
                 else Decimal(str(self.min_star_rating))
             )
-        except (DecimalException, ValueError) as exc:
+        except (DecimalException, ValueError, TypeError) as exc:
             raise DomainValidationError("Minimum star rating must be numeric.") from exc
         if not rating.is_finite():
             raise DomainValidationError("Minimum star rating must be finite.")
+        if effective_decimal_places(rating) > 1:
+            raise DomainValidationError("Minimum star rating must have at most one decimal place.")
         object.__setattr__(self, "min_star_rating", rating)
 
 

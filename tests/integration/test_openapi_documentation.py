@@ -127,6 +127,7 @@ def test_openapi_schema_exposes_the_complete_public_http_contract() -> None:
         branch for branch in money_schema["amount"]["anyOf"] if branch.get("type") == "number"
     )
     assert numeric_amount["multipleOf"] == 0.01
+    assert numeric_amount["minimum"] == 0.01
     assert numeric_amount["maximum"] == 999_999_999_999.99
     assert money_schema["currency"]["enum"] == ["INR"]
     assert schema["components"]["schemas"]["MoneyResponse"]["properties"]["currency"] == {
@@ -142,6 +143,8 @@ def test_openapi_schema_exposes_the_complete_public_http_contract() -> None:
         if branch.get("type") == "number"
     )
     assert numeric_rating["multipleOf"] == 0.1
+    assert numeric_rating["minimum"] == 1
+    assert numeric_rating["maximum"] == 5
 
     search_parameters = schema["paths"]["/api/v1/properties/search"]["get"]["parameters"]
     parameters_by_name = {parameter["name"]: parameter for parameter in search_parameters}
@@ -152,6 +155,7 @@ def test_openapi_schema_exposes_the_complete_public_http_contract() -> None:
             if branch.get("type") == "number"
         )
         assert numeric_price["multipleOf"] == 0.01
+        assert numeric_price["minimum"] == 0
         assert numeric_price["maximum"] == 999_999_999_999.99
     numeric_minimum_rating = next(
         branch
@@ -159,6 +163,8 @@ def test_openapi_schema_exposes_the_complete_public_http_contract() -> None:
         if branch.get("type") == "number"
     )
     assert numeric_minimum_rating["multipleOf"] == 0.1
+    assert numeric_minimum_rating["minimum"] == 1
+    assert numeric_minimum_rating["maximum"] == 5
 
     booking_response_schema = schema["components"]["schemas"]["BookingResponse"]
     assert "cancellation" not in booking_response_schema["required"]

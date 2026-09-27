@@ -366,9 +366,7 @@ class PaymentService:
         self._locks = locks
 
     def process(self, command: ProcessPaymentCommand) -> PaymentCommandResult:
-        idempotency_key = command.idempotency_key.strip()
-        if not idempotency_key:
-            raise DomainValidationError("Idempotency-Key is required.")
+        idempotency_key = self._validated_idempotency_key(command.idempotency_key)
         fingerprint = self.fingerprint(command)
 
         # Lock order is a public invariant: idempotency key before booking.
@@ -383,6 +381,17 @@ class PaymentService:
                     idempotency_key=idempotency_key,
                     fingerprint=fingerprint,
                 )
+
+    @staticmethod
+    def _validated_idempotency_key(value: str) -> str:
+        if len(value) > 200:
+            raise DomainValidationError("Idempotency-Key must not exceed 200 characters.")
+        if any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value):
+            raise DomainValidationError("Idempotency key cannot contain control characters.")
+        normalized = value.strip()
+        if not normalized:
+            raise DomainValidationError("Idempotency-Key is required.")
+        return normalized
 
     def _replay_if_present(
         self,

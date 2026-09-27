@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
@@ -35,7 +35,7 @@ from hotieler.domain.enums import (
     PaymentStatus,
     RefundStatus,
 )
-from hotieler.domain.value_objects import Money
+from hotieler.domain.value_objects import Money, effective_decimal_places
 
 AmenityLabel = Annotated[
     str,
@@ -43,6 +43,7 @@ AmenityLabel = Annotated[
 ]
 
 _ISO_DATE_PATTERN: Final = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MAX_PUBLIC_PRICE: Final = Decimal("999999999999.99")
 
 
 def _require_iso_date_string(value: Any) -> str:
@@ -54,6 +55,98 @@ def _require_iso_date_string(value: Any) -> str:
 IsoDate = Annotated[date, BeforeValidator(_require_iso_date_string)]
 
 
+def _bounded_decimal(
+    value: Any,
+    *,
+    label: str,
+    minimum: Decimal,
+    maximum: Decimal,
+    decimal_places: int,
+) -> Decimal:
+    """Parse and constrain an untrusted decimal without context-sensitive arithmetic."""
+
+    try:
+        candidate = Decimal(str(value))
+    except (DecimalException, ValueError, TypeError) as exc:
+        raise ValueError(f"{label} must be a valid decimal.") from exc
+    if not candidate.is_finite():
+        raise ValueError(f"{label} must be finite.")
+    # Bounds come before scale inspection so extreme exponents never reach a
+    # precision operation. ``as_tuple`` below is context-independent.
+    if candidate < minimum or candidate > maximum:
+        raise ValueError(f"{label} must be between {minimum} and {maximum}.")
+    if effective_decimal_places(candidate) > decimal_places:
+        raise ValueError(f"{label} must have at most {decimal_places} decimal places.")
+    return candidate
+
+
+def _validate_nightly_rate(value: Any) -> Decimal:
+    return _bounded_decimal(
+        value,
+        label="Nightly rate",
+        minimum=Decimal("0.01"),
+        maximum=_MAX_PUBLIC_PRICE,
+        decimal_places=2,
+    )
+
+
+def _validate_search_price(value: Any) -> Decimal:
+    return _bounded_decimal(
+        value,
+        label="Search price",
+        minimum=Decimal("0"),
+        maximum=_MAX_PUBLIC_PRICE,
+        decimal_places=2,
+    )
+
+
+def _validate_star_rating(value: Any) -> Decimal:
+    return _bounded_decimal(
+        value,
+        label="Star rating",
+        minimum=Decimal("1"),
+        maximum=Decimal("5"),
+        decimal_places=1,
+    )
+
+
+def _money_schema_extra(schema: dict[str, Any]) -> None:
+    schema["anyOf"][0].update(
+        minimum=0.01,
+        maximum=999_999_999_999.99,
+        multipleOf=0.01,
+    )
+
+
+def _search_price_schema_extra(schema: dict[str, Any]) -> None:
+    schema["anyOf"][0].update(
+        minimum=0,
+        maximum=999_999_999_999.99,
+        multipleOf=0.01,
+    )
+
+
+def _star_rating_schema_extra(schema: dict[str, Any]) -> None:
+    schema["anyOf"][0].update(minimum=1, maximum=5, multipleOf=0.1)
+
+
+NightlyRateAmount = Annotated[
+    Decimal,
+    BeforeValidator(_validate_nightly_rate),
+    Field(json_schema_extra=_money_schema_extra),
+]
+SearchPrice = Annotated[
+    Decimal,
+    BeforeValidator(_validate_search_price),
+    Field(json_schema_extra=_search_price_schema_extra),
+]
+StarRating = Annotated[
+    Decimal,
+    BeforeValidator(_validate_star_rating),
+    Field(json_schema_extra=_star_rating_schema_extra),
+]
+
+
 class _RequestModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -63,13 +156,7 @@ class MoneyInput(_RequestModel):
         json_schema_extra={"examples": [{"amount": "3500.00", "currency": "INR"}]}
     )
 
-    amount: Decimal = Field(
-        gt=0,
-        le=Decimal("999999999999.99"),
-        multiple_of=0.01,
-        max_digits=14,
-        decimal_places=2,
-    )
+    amount: NightlyRateAmount
     currency: Literal["INR"] = Field(
         default="INR",
         json_schema_extra={"enum": ["INR"]},
@@ -146,12 +233,7 @@ class CreatePropertyRequest(_RequestModel):
     city: str = Field(min_length=1, max_length=120)
     locality: str = Field(min_length=1, max_length=120)
     address: str = Field(min_length=1, max_length=500)
-    star_rating: Decimal = Field(
-        ge=1,
-        le=5,
-        multiple_of=0.1,
-        decimal_places=1,
-    )
+    star_rating: StarRating
     amenities: list[AmenityLabel] = Field(default_factory=list, max_length=100)
     room_types: list[RoomTypeRequest] = Field(min_length=1, max_length=100)
 

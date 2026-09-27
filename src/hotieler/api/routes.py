@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Annotated, Any, cast
 from uuid import UUID
 
@@ -22,6 +21,8 @@ from hotieler.api.schemas import (
     PaymentResultResponse,
     ProcessPaymentRequest,
     PropertyResponse,
+    SearchPrice,
+    StarRating,
     availability_response,
     booking_response,
     owner_response,
@@ -375,29 +376,17 @@ def search_properties(
     guest_count: Annotated[int, Query(gt=0, le=10_000)],
     locality: Annotated[str | None, Query(min_length=1, max_length=120)] = None,
     min_price: Annotated[
-        Decimal | None,
-        Query(
-            ge=0,
-            le=Decimal("999999999999.99"),
-            multiple_of=0.01,
-            max_digits=14,
-            decimal_places=2,
-        ),
+        SearchPrice | None,
+        Query(),
     ] = None,
     max_price: Annotated[
-        Decimal | None,
-        Query(
-            ge=0,
-            le=Decimal("999999999999.99"),
-            multiple_of=0.01,
-            max_digits=14,
-            decimal_places=2,
-        ),
+        SearchPrice | None,
+        Query(),
     ] = None,
     amenities: Annotated[list[AmenityLabel] | None, Query(max_length=100)] = None,
     min_star_rating: Annotated[
-        Decimal | None,
-        Query(ge=1, le=5, multiple_of=0.1),
+        StarRating | None,
+        Query(),
     ] = None,
 ) -> list[AvailabilityResponse]:
     query = SearchQuery(
@@ -514,7 +503,7 @@ def process_payment(
             booking_id=booking_id,
             method=payload.method,
             mock_outcome=payload.mock_outcome,
-            idempotency_key=idempotency_key.strip(),
+            idempotency_key=idempotency_key,
         )
     )
     return payment_result_response(result)

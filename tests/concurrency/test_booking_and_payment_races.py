@@ -662,7 +662,7 @@ def test_payment_and_cancellation_share_the_booking_lock() -> None:
 
 
 def test_payment_and_cancellation_can_both_succeed_when_only_booking_lock_is_bypassed() -> None:
-    """Mutation control: two successful results cannot occur under any serial ordering."""
+    """Mutation control: paid plus zero-refund cancellation has no serial ordering."""
 
     container, booking_command = _container_with_one_room()
     booking = container.booking_service.create(booking_command)

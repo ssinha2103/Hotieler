@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException
 from enum import Enum
 from uuid import UUID
 
@@ -16,7 +16,7 @@ from hotieler.domain.enums import (
     RefundStatus,
 )
 from hotieler.domain.errors import DomainValidationError, InvalidBookingTransitionError
-from hotieler.domain.value_objects import Money, StayPeriod
+from hotieler.domain.value_objects import Money, StayPeriod, effective_decimal_places
 
 
 def _required_text(value: str, field_name: str) -> str:
@@ -78,6 +78,10 @@ class RoomType:
             raise DomainValidationError("A room type must have at least one unit.")
         if self.guests_per_unit <= 0:
             raise DomainValidationError("Room capacity must be greater than zero.")
+        if not isinstance(self.nightly_rate, Money):
+            raise DomainValidationError("Nightly rate must be a money value.")
+        if self.nightly_rate.amount < Decimal("0.01"):
+            raise DomainValidationError("Nightly rate must be at least 0.01.")
         object.__setattr__(self, "name", _required_text(self.name, "Room type name"))
         object.__setattr__(self, "amenities", normalize_amenities(self.amenities))
 
@@ -107,10 +111,12 @@ class Property:
                 if isinstance(self.star_rating, Decimal)
                 else Decimal(str(self.star_rating))
             )
-        except (InvalidOperation, ValueError) as exc:
+        except (DecimalException, ValueError, TypeError) as exc:
             raise DomainValidationError("Star rating must be numeric.") from exc
         if not rating.is_finite() or rating < Decimal("1") or rating > Decimal("5"):
             raise DomainValidationError("Star rating must be between 1 and 5.")
+        if effective_decimal_places(rating) > 1:
+            raise DomainValidationError("Star rating must have at most one decimal place.")
         if not self.room_types:
             raise DomainValidationError("A property must define at least one room type.")
         if any(room.property_id != self.id for room in self.room_types):
@@ -147,7 +153,7 @@ class CancellationRecord:
                 if isinstance(self.refund_percentage, Decimal)
                 else Decimal(str(self.refund_percentage))
             )
-        except (InvalidOperation, ValueError) as exc:
+        except (DecimalException, ValueError, TypeError) as exc:
             raise DomainValidationError("Refund percentage must be numeric.") from exc
         if not percentage.is_finite():
             raise DomainValidationError("Refund percentage must be finite.")

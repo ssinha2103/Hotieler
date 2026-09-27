@@ -192,6 +192,14 @@ def test_room_type_rejects_non_positive_guest_request() -> None:
         room.units_for(0)
 
 
+def test_room_type_requires_a_chargeable_money_nightly_rate() -> None:
+    with pytest.raises(DomainValidationError, match="money value"):
+        room_type(nightly_rate="100.00")  # type: ignore[arg-type]
+
+    with pytest.raises(DomainValidationError, match="at least 0.01"):
+        room_type(nightly_rate=Money.zero())
+
+
 def test_property_normalizes_fields_and_finds_its_room_type() -> None:
     value = property_entity(star_rating="4.5")
 
@@ -208,6 +216,13 @@ def test_property_normalizes_fields_and_finds_its_room_type() -> None:
 def test_property_rejects_non_numeric_star_rating() -> None:
     with pytest.raises(DomainValidationError, match="Star rating must be numeric"):
         property_entity(star_rating="not-a-rating")
+
+
+def test_property_enforces_effective_star_rating_scale() -> None:
+    assert property_entity(star_rating=Decimal("4.5000")).star_rating == Decimal("4.5000")
+
+    with pytest.raises(DomainValidationError, match="at most one decimal place"):
+        property_entity(star_rating=Decimal("4.5001"))
 
 
 @pytest.mark.parametrize("rating", [Decimal("NaN"), Decimal("0.9"), Decimal("5.1")])

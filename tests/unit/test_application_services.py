@@ -257,6 +257,24 @@ def test_search_query_rejects_non_finite_minimum_star_rating(rating: Decimal) ->
         )
 
 
+def test_search_query_enforces_effective_minimum_star_rating_scale() -> None:
+    query = SearchQuery(
+        city="Bengaluru",
+        stay=StayPeriod(date(2030, 1, 10), date(2030, 1, 12)),
+        guest_count=1,
+        min_star_rating=Decimal("4.5000"),
+    )
+    assert query.min_star_rating == Decimal("4.5000")
+
+    with pytest.raises(DomainValidationError, match="at most one decimal place"):
+        SearchQuery(
+            city="Bengaluru",
+            stay=StayPeriod(date(2030, 1, 10), date(2030, 1, 12)),
+            guest_count=1,
+            min_star_rating=Decimal("4.5001"),
+        )
+
+
 def test_search_excludes_only_overlapping_active_inventory(services: Services) -> None:
     _, property = onboard_property(services, total_units=1)
     first = create_booking(services, property)
@@ -441,6 +459,60 @@ def test_payment_rejection_releases_inventory_immediately(services: Services) ->
     assert result.booking.status is BookingStatus.PAYMENT_FAILED
     replacement = create_booking(services, property)
     assert replacement.status is BookingStatus.PENDING_PAYMENT
+
+
+@pytest.mark.parametrize(
+    ("invalid_key", "message"),
+    [
+        ("   ", "Idempotency-Key is required"),
+        ("x" * 201, "Idempotency-Key must not exceed 200 characters"),
+        ("key\tinside", "Idempotency key cannot contain control characters"),
+        (f"key{chr(0x85)}inside", "Idempotency key cannot contain control characters"),
+    ],
+)
+def test_invalid_idempotency_key_is_rejected_before_payment_side_effects(
+    services: Services,
+    invalid_key: str,
+    message: str,
+) -> None:
+    _, property = onboard_property(services)
+    booking = create_booking(services, property)
+    payments, processors = payment_service(services)
+
+    with pytest.raises(DomainValidationError, match=message):
+        payments.process(
+            ProcessPaymentCommand(
+                booking_id=booking.id,
+                method=PaymentMethod.CARD,
+                mock_outcome=MockPaymentOutcome.APPROVED,
+                idempotency_key=invalid_key,
+            )
+        )
+
+    stored_booking = services.booking.get(booking.id)
+    assert stored_booking.status is BookingStatus.PENDING_PAYMENT
+    assert stored_booking.payment_id is None
+    assert processors[PaymentMethod.CARD].calls == 0
+    assert services.payments.get_by_idempotency_key(invalid_key) is None
+
+
+def test_idempotency_key_accepts_the_200_character_boundary(services: Services) -> None:
+    _, property = onboard_property(services)
+    booking = create_booking(services, property)
+    payments, processors = payment_service(services)
+    idempotency_key = "x" * 200
+
+    result = payments.process(
+        ProcessPaymentCommand(
+            booking_id=booking.id,
+            method=PaymentMethod.CARD,
+            mock_outcome=MockPaymentOutcome.APPROVED,
+            idempotency_key=idempotency_key,
+        )
+    )
+
+    assert result.payment.idempotency_key == idempotency_key
+    assert processors[PaymentMethod.CARD].calls == 1
 
 
 def test_payment_idempotency_replays_and_rejects_changed_fingerprint(
