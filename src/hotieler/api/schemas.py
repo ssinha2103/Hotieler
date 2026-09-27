@@ -45,7 +45,7 @@ class MoneyInput(_RequestModel):
     def normalize_currency(cls, value: str) -> str:
         normalized = value.upper()
         if normalized != "INR":
-            raise ValueError("Only INR is supported by this assessment API.")
+            raise ValueError("Only INR is supported.")
         return normalized
 
 
@@ -200,7 +200,7 @@ class BookingResponse(BaseModel):
     total_price: MoneyResponse
     status: BookingStatus
     payment_id: UUID | None
-    cancellation: CancellationResponse | None
+    cancellation: CancellationResponse | None = None
     created_at: datetime
     updated_at: datetime
 

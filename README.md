@@ -32,8 +32,9 @@ focused on backend design and correctness.
 
 ## Quick start
 
-The only prerequisite is Docker Engine with Docker Compose v2. No host Python, `uv`, or
-virtual environment is required.
+The primary launcher requires Bash, Docker Engine, and Docker Compose v2. No host Python,
+`uv`, or virtual environment is required. The optional `make ...` shortcuts additionally
+require Make, and `make smoke` requires host `curl` for its HTTP assertions.
 
 ```bash
 ./run.sh

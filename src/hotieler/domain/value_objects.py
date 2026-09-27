@@ -1,8 +1,9 @@
 """Immutable value objects and their invariants."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, DecimalException
 
 from hotieler.domain.errors import DomainValidationError
 
@@ -12,11 +13,18 @@ _CENT = Decimal("0.01")
 def _decimal(value: Decimal | int | str) -> Decimal:
     try:
         candidate = value if isinstance(value, Decimal) else Decimal(str(value))
-    except (InvalidOperation, ValueError) as exc:
+    except (DecimalException, ValueError) as exc:
         raise DomainValidationError("Money amount must be a valid decimal.") from exc
     if not candidate.is_finite():
         raise DomainValidationError("Money amount must be finite.")
     return candidate
+
+
+def _decimal_operation(operation: Callable[[], Decimal], message: str) -> Decimal:
+    try:
+        return operation()
+    except DecimalException as exc:
+        raise DomainValidationError(message) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +39,10 @@ class Money:
     currency: str = "INR"
 
     def __post_init__(self) -> None:
-        amount = _decimal(self.amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        amount = _decimal_operation(
+            lambda: _decimal(self.amount).quantize(_CENT, rounding=ROUND_HALF_UP),
+            "Money amount has unsupported precision or magnitude.",
+        )
         currency = self.currency.strip().upper()
         if amount < 0:
             raise DomainValidationError("Money amount cannot be negative.")
@@ -55,7 +66,11 @@ class Money:
         if not isinstance(other, Money):
             return NotImplemented
         self.require_same_currency(other)
-        return Money(self.amount + other.amount, self.currency)
+        amount = _decimal_operation(
+            lambda: self.amount + other.amount,
+            "Money addition could not be completed.",
+        )
+        return Money(amount, self.currency)
 
     def __sub__(self, other: "Money") -> "Money":
         if not isinstance(other, Money):
@@ -63,19 +78,31 @@ class Money:
         self.require_same_currency(other)
         if other.amount > self.amount:
             raise DomainValidationError("Money subtraction cannot produce a negative amount.")
-        return Money(self.amount - other.amount, self.currency)
+        amount = _decimal_operation(
+            lambda: self.amount - other.amount,
+            "Money subtraction could not be completed.",
+        )
+        return Money(amount, self.currency)
 
     def multiply(self, multiplier: Decimal | int | str) -> "Money":
         factor = _decimal(multiplier)
         if factor < 0:
             raise DomainValidationError("Money multiplier cannot be negative.")
-        return Money(self.amount * factor, self.currency)
+        amount = _decimal_operation(
+            lambda: self.amount * factor,
+            "Money multiplication could not be completed.",
+        )
+        return Money(amount, self.currency)
 
     def percentage(self, percent: Decimal | int | str) -> "Money":
         value = _decimal(percent)
         if value < 0 or value > 100:
             raise DomainValidationError("Percentage must be between 0 and 100.")
-        return self.multiply(value / Decimal("100"))
+        factor = _decimal_operation(
+            lambda: value / Decimal("100"),
+            "Money percentage calculation could not be completed.",
+        )
+        return self.multiply(factor)
 
 
 @dataclass(frozen=True, slots=True)

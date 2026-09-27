@@ -1,5 +1,5 @@
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, Inexact, InvalidOperation, localcontext
 
 import pytest
 
@@ -29,6 +29,28 @@ def test_money_rejects_negative_non_finite_and_currency_mismatch() -> None:
         Money(Decimal("1"), "RUPEES")
     with pytest.raises(DomainValidationError):
         _ = Money(Decimal("1"), "INR") + Money(Decimal("1"), "USD")
+
+
+def test_money_converts_quantize_failure_to_domain_validation_error() -> None:
+    with pytest.raises(
+        DomainValidationError,
+        match="unsupported precision or magnitude",
+    ) as captured:
+        Money(Decimal("1e28"))
+
+    assert isinstance(captured.value.__cause__, InvalidOperation)
+
+
+def test_money_converts_arithmetic_decimal_failure_to_domain_validation_error() -> None:
+    price = Money(Decimal("99.99"))
+
+    with localcontext() as context:
+        context.prec = 3
+        context.traps[Inexact] = True
+        with pytest.raises(DomainValidationError, match="multiplication") as captured:
+            price.multiply(Decimal("1.1"))
+
+    assert isinstance(captured.value.__cause__, Inexact)
 
 
 def test_stay_period_uses_half_open_overlap_semantics() -> None:

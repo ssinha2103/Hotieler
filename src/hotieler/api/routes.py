@@ -327,8 +327,14 @@ def search_properties(
     check_out: Annotated[date, Query()],
     guest_count: Annotated[int, Query(gt=0, le=10_000)],
     locality: Annotated[str | None, Query(min_length=1, max_length=120)] = None,
-    min_price: Annotated[Decimal | None, Query(ge=0)] = None,
-    max_price: Annotated[Decimal | None, Query(ge=0)] = None,
+    min_price: Annotated[
+        Decimal | None,
+        Query(ge=0, max_digits=14, decimal_places=2),
+    ] = None,
+    max_price: Annotated[
+        Decimal | None,
+        Query(ge=0, max_digits=14, decimal_places=2),
+    ] = None,
     amenities: Annotated[list[str] | None, Query()] = None,
     min_star_rating: Annotated[Decimal | None, Query(ge=1, le=5)] = None,
 ) -> list[AvailabilityResponse]:

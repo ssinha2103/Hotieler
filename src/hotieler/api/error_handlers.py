@@ -30,6 +30,21 @@ def _route_path(request: Request) -> str:
     return route_path if isinstance(route_path, str) else request.url.path
 
 
+def _public_validation_errors(exc: RequestValidationError) -> list[dict[str, Any]]:
+    """Return the stable, JSON-safe subset of Pydantic validation errors."""
+
+    return [
+        {
+            "type": str(error.get("type", "value_error")),
+            "loc": [
+                part if isinstance(part, (str, int)) else str(part) for part in error.get("loc", ())
+            ],
+            "msg": str(error.get("msg", "Invalid value.")),
+        }
+        for error in exc.errors()
+    ]
+
+
 async def hotieler_error_handler(request: Request, exc: HotielerError) -> JSONResponse:
     if isinstance(exc, ResourceNotFoundError):
         status_code = 404
@@ -75,7 +90,7 @@ async def request_validation_error_handler(
             _envelope(
                 "REQUEST_VALIDATION_ERROR",
                 "The request could not be validated.",
-                {"errors": exc.errors()},
+                {"errors": _public_validation_errors(exc)},
             )
         ),
     )

@@ -326,6 +326,26 @@ def test_onboarding_and_booking_resource_errors_preserve_context() -> None:
 def test_transport_and_domain_validation_failures_use_the_same_error_shape() -> None:
     client, _ = _new_client()
 
+    non_finite_guest_count = client.post(
+        "/api/v1/bookings",
+        content=(
+            '{"property_id":"11111111-1111-4111-8111-111111111111",'
+            '"room_type_id":"22222222-2222-4222-8222-222222222222",'
+            '"check_in":"2026-01-15","check_out":"2026-01-17",'
+            '"guest_count":1e400}'
+        ),
+        headers={"Content-Type": "application/json"},
+    )
+    non_finite_error = _assert_error(
+        non_finite_guest_count,
+        422,
+        "REQUEST_VALIDATION_ERROR",
+    )
+    assert non_finite_error["details"]["errors"]
+    assert all(
+        set(error) == {"type", "loc", "msg"} for error in non_finite_error["details"]["errors"]
+    )
+
     invalid_email = client.post(
         "/api/v1/owners",
         json={"name": "Invalid Owner", "contact_email": "not-an-email"},
@@ -374,6 +394,24 @@ def test_transport_and_domain_validation_failures_use_the_same_error_shape() -> 
         },
     )
     _assert_error(reversed_price_range, 422, "DOMAIN_VALIDATION_ERROR")
+
+    for price_parameter in ("min_price", "max_price"):
+        oversized_price = client.get(
+            "/api/v1/properties/search",
+            params={
+                "city": "Bengaluru",
+                "check_in": "2026-01-15",
+                "check_out": "2026-01-17",
+                "guest_count": 2,
+                price_parameter: "1e28",
+            },
+        )
+        oversized_error = _assert_error(
+            oversized_price,
+            422,
+            "REQUEST_VALIDATION_ERROR",
+        )
+        assert oversized_error["details"]["errors"][0]["loc"][-1] == price_parameter
 
     invalid_stay = client.get(
         "/api/v1/properties/search",

@@ -107,6 +107,11 @@ class InMemoryPaymentRepository:
     def save(self, payment: PaymentRecord) -> None:
         snapshot = deepcopy(payment)
         with self._lock:
+            if snapshot.id in self._payments:
+                raise DuplicateResourceError(
+                    "A payment with this identifier already exists.",
+                    details={"payment_id": str(snapshot.id)},
+                )
             existing_id = self._idempotency_index.get(snapshot.idempotency_key)
             if existing_id is not None and existing_id != snapshot.id:
                 raise DuplicateResourceError(

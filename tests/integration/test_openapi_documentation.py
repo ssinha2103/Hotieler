@@ -113,6 +113,11 @@ def test_openapi_schema_exposes_the_complete_public_http_contract() -> None:
     assert owner_schema["properties"]["contact_email"]["format"] == "email"
     assert owner_schema["examples"]
 
+    booking_response_schema = schema["components"]["schemas"]["BookingResponse"]
+    assert "cancellation" not in booking_response_schema["required"]
+    cancellation_schema = booking_response_schema["properties"]["cancellation"]
+    assert {"type": "null"} in cancellation_schema["anyOf"]
+
 
 def test_redoc_is_available_as_a_secondary_contract_view() -> None:
     client = TestClient(create_app())

@@ -92,6 +92,21 @@ def test_payment_repository_rejects_duplicate_key_without_replacing_original() -
     assert stored is not original
 
 
+def test_payment_repository_rejects_duplicate_id_without_corrupting_indexes() -> None:
+    repository = InMemoryPaymentRepository()
+    original = _payment(identifier=41, key="original-key")
+    duplicate = _payment(identifier=41, key="different-key")
+    repository.save(original)
+
+    with pytest.raises(DuplicateResourceError):
+        repository.save(duplicate)
+
+    stored = repository.get_by_idempotency_key("original-key")
+    assert stored == original
+    assert stored is not original
+    assert repository.get_by_idempotency_key("different-key") is None
+
+
 def test_keyed_lock_manager_reuses_reentrant_key_and_reclaims_all_entries() -> None:
     manager = InMemoryKeyedLockManager()
 

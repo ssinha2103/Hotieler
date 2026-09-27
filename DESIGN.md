@@ -29,7 +29,7 @@ erDiagram
     PROPERTY ||--|{ ROOM_TYPE : offers
     PROPERTY ||--o{ BOOKING : receives
     ROOM_TYPE ||--o{ BOOKING : reserves
-    BOOKING ||--o{ PAYMENT_RECORD : has
+    BOOKING ||--o| PAYMENT_RECORD : has
 
     OWNER_ACCOUNT {
         UUID id
