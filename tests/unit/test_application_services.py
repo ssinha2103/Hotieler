@@ -268,6 +268,73 @@ def test_search_excludes_only_overlapping_active_inventory(services: Services) -
     )
 
 
+def test_search_uses_peak_nightly_occupancy_for_staggered_bookings(
+    services: Services,
+) -> None:
+    _, property = onboard_property(services, total_units=2)
+    create_booking(
+        services,
+        property,
+        stay=StayPeriod(date(2030, 1, 10), date(2030, 1, 11)),
+    )
+    create_booking(
+        services,
+        property,
+        stay=StayPeriod(date(2030, 1, 11), date(2030, 1, 12)),
+    )
+
+    results = services.availability.search(SearchQuery(city="Bengaluru", stay=STAY, guest_count=1))
+
+    assert len(results) == 1
+    assert results[0].available_units == 1
+
+
+def test_booking_uses_peak_nightly_occupancy_and_rejects_only_true_peak_conflict(
+    services: Services,
+) -> None:
+    _, property = onboard_property(services, total_units=2)
+    create_booking(
+        services,
+        property,
+        stay=StayPeriod(date(2030, 1, 10), date(2030, 1, 11)),
+    )
+    create_booking(
+        services,
+        property,
+        stay=StayPeriod(date(2030, 1, 11), date(2030, 1, 12)),
+    )
+
+    continuous_stay = create_booking(services, property, stay=STAY)
+
+    assert continuous_stay.required_units == 1
+    with pytest.raises(RoomInventoryUnavailableError):
+        create_booking(services, property, stay=STAY)
+
+
+def test_peak_nightly_occupancy_preserves_multi_unit_reservations(
+    services: Services,
+) -> None:
+    _, property = onboard_property(services, total_units=4, guests_per_unit=1)
+    create_booking(
+        services,
+        property,
+        stay=StayPeriod(date(2030, 1, 10), date(2030, 1, 11)),
+        guest_count=2,
+    )
+    create_booking(
+        services,
+        property,
+        stay=StayPeriod(date(2030, 1, 11), date(2030, 1, 12)),
+        guest_count=2,
+    )
+
+    continuous_stay = create_booking(services, property, stay=STAY, guest_count=2)
+
+    assert continuous_stay.required_units == 2
+    with pytest.raises(RoomInventoryUnavailableError):
+        create_booking(services, property, stay=STAY)
+
+
 def test_booking_validates_property_room_relationship(services: Services) -> None:
     _, first = onboard_property(services, name="First")
     _, second = onboard_property(services, name="Second")

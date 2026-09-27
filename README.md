@@ -1,22 +1,17 @@
-# Hotieler
+# Hotel Booking Service
 
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688?logo=fastapi&logoColor=white)
 ![Docker](https://img.shields.io/badge/runtime-Docker-2496ED?logo=docker&logoColor=white)
 [![CI](https://github.com/ssinha2103/Hotieler/actions/workflows/ci.yml/badge.svg)](https://github.com/ssinha2103/Hotieler/actions/workflows/ci.yml)
 
-Hotieler is a backend-only hotel booking service built to demonstrate domain modelling,
-correct inventory handling under concurrency, payment idempotency, and replaceable
-infrastructure boundaries. It supports property onboarding, availability search,
+This backend-only service supports property onboarding, availability search,
 inventory-safe booking, deterministic mock payments, cancellation, and refund calculation.
+See [DESIGN.md](DESIGN.md) for its architecture, invariants, and trade-offs.
 
-Start with the [assessment traceability matrix](ASSESSMENT_TRACEABILITY.md) for a
-point-by-point map from requirements to endpoints, implementation symbols, tests, and
-demo steps. See [DESIGN.md](DESIGN.md) for the focused architecture walkthrough.
+## Design overview
 
-## What this project demonstrates
-
-| Engineering concern | Evidence in Hotieler |
+| Engineering concern | Implementation |
 |---|---|
 | Domain modelling | Immutable `Money` and `StayPeriod` value objects; entity-owned booking transitions |
 | OOP and SOLID | Narrow ports, strategy objects, adapters, specifications, and an explicit composition root |
@@ -28,13 +23,12 @@ demo steps. See [DESIGN.md](DESIGN.md) for the focused architecture walkthrough.
 | Failure handling | Explicit rejected-payment, invalid-transition, cancellation, and inventory-conflict paths |
 | Reproducibility | One-command Docker startup, container-only quality gates, and an isolated runtime smoke test |
 
-> **Assessment language note:** the original brief specifies Java 17 and Spring Boot.
-> The recruiter explicitly approved Python 3.12 and FastAPI for this submission. That
-> approval correspondence should be retained alongside the submitted repository.
+> **Implementation language note:** the original brief specifies Java 17 and Spring Boot.
+> Python 3.12 and FastAPI were explicitly approved for this implementation.
 
 The service intentionally has no frontend, authentication, production database, real
 payment integration, or real refund movement. These exclusions keep the implementation
-focused on the assessment's backend design and correctness criteria.
+focused on backend design and correctness.
 
 ## Quick start
 
@@ -81,10 +75,10 @@ walkthrough, start the service and opt in to sample catalog data:
 
 `seed` is a local convenience command, not a private data-loading endpoint. It creates its
 sample owner and properties by calling the same public `POST /api/v1/owners` and
-`POST /api/v1/owners/{owner_id}/properties` operations that an evaluator uses in Swagger.
+`POST /api/v1/owners/{owner_id}/properties` operations that a caller uses in Swagger.
 The normal validation, application services, and in-memory repositories are therefore
 exercised; the domain is not bypassed by a special schema or direct repository mutation.
-There is no SQL or database seed because this assessment intentionally uses in-memory
+There is no SQL or database seed because this implementation intentionally uses in-memory
 persistence and contains no database, ORM, or migration layer. In other words,
 `./run.sh seed` is a developer-side API client, not application startup behavior.
 
@@ -128,13 +122,16 @@ For each half-open stay `[check_in, check_out)`:
 
 ```text
 required_units = ceil(guest_count / guests_per_unit)
-available_units = total_units - overlapping units held by active bookings
+peak_reserved_units = maximum active units on any night of the requested stay
+available_units = total_units - peak_reserved_units
 quoted_total = nights * required_units * nightly_rate
 ```
 
-Adjacent stays do not overlap. Search results are advisory; booking creation repeats the
-availability calculation while holding `room_type:{id}`. This prevents overselling inside
-the deliberately single-process runtime.
+Room types are pooled interchangeable inventory; no physical room number is assigned.
+Consequently, adjacent or staggered bookings are counted together only on nights when they
+actually coexist. Search results are advisory; booking creation repeats the peak-occupancy
+calculation while holding `room_type:{id}`. This prevents overselling inside the deliberately
+single-process runtime.
 
 Every payment request requires an `Idempotency-Key`. A retry with the same key and the
 same booking, method, and mock outcome returns the original result. Reusing the key for a
@@ -176,7 +173,7 @@ Business errors use one stable envelope:
 Every HTTP response includes `X-Request-ID`. A caller-supplied ID is reused only when it is
 1-64 characters, starts with an alphanumeric character, and otherwise contains only
 alphanumerics, `.`, `_`, or `-`; the API generates an opaque UUID for anything else. This
-lets an evaluator correlate a response with its log event without exposing request bodies
+lets a caller correlate a response with its log event without exposing request bodies
 or payment credentials.
 
 Application logs are one-line JSON records. Request-completion records include the request
@@ -205,11 +202,10 @@ wired only at the composition root. The domain imports neither FastAPI nor infra
 
 ```text
 Hotieler/
-├── ASSESSMENT_TRACEABILITY.md  # requirement-to-evidence audit index
 ├── DESIGN.md                   # focused architecture and trade-offs
 ├── Dockerfile                  # locked, non-root, single-worker runtime
-├── compose.yaml                # local evaluator runtime and healthcheck
-├── run.sh                      # Docker-only evaluator launcher
+├── compose.yaml                # local runtime and healthcheck
+├── run.sh                      # Docker-only launcher
 ├── scripts/
 │   ├── docker-smoke.sh         # isolated runtime acceptance gate
 │   └── seed_local_data.py      # opt-in client of the public onboarding APIs
@@ -265,19 +261,19 @@ same result.
 ## Intentional limitations and production evolution
 
 State is lost when the container restarts, and startup deliberately does not restore or
-seed it. Docker is used as a reproducible evaluator environment, not presented as a
+seed it. Docker is used as a reproducible local environment, not presented as a
 production deployment design. The Compose service runs exactly one Uvicorn worker because
 both inventory locks and repositories are process-local.
 
 Payment handling is serialized by idempotency-key and booking locks, but the in-memory
 booking and payment records are written to two repositories without a shared transaction.
 An adapter failure or process crash between those writes could leave a transitioned booking
-without its payment record. This is an explicit assessment boundary, not a production
+without its payment record. This is an explicit implementation boundary, not a production
 atomicity claim.
 
 A production evolution would introduce PostgreSQL transactions with row-level or
 optimistic inventory control, durable idempotency records, expiring holds, a persisted
 payment-attempt/outbox and reconciliation flow, asynchronous payment and refund webhooks,
 authentication and authorization, centralized log collection plus metrics/tracing, and
-multi-instance coordination. Those concerns are intentionally outside this machine-coding
-submission.
+multi-instance coordination. Those concerns are intentionally outside this service's
+current scope.

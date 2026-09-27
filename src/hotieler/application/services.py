@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha256
 from uuid import UUID
@@ -69,14 +69,39 @@ def _not_found(resource: str, identifier: UUID) -> ResourceNotFoundError:
     )
 
 
-def _reserved_units(bookings: list[Booking], room_type_id: UUID, stay: StayPeriod) -> int:
-    return sum(
-        booking.required_units
-        for booking in bookings
-        if booking.room_type_id == room_type_id
-        and booking.reserves_inventory
-        and booking.stay.overlaps(stay)
-    )
+def _peak_reserved_units(bookings: list[Booking], room_type_id: UUID, stay: StayPeriod) -> int:
+    """Return the highest occupied unit count on any night in ``stay``.
+
+    Room types are pooled inventory: a booking reserves a number of
+    interchangeable units for each night of its half-open stay, not a specific
+    physical room.  Summing every booking that touches the requested interval
+    would therefore double-count adjacent bookings that never coexist.
+    """
+
+    occupancy_changes: dict[date, int] = {}
+    for booking in bookings:
+        if (
+            booking.room_type_id != room_type_id
+            or not booking.reserves_inventory
+            or not booking.stay.overlaps(stay)
+        ):
+            continue
+
+        overlap_start = max(booking.stay.check_in, stay.check_in)
+        overlap_end = min(booking.stay.check_out, stay.check_out)
+        occupancy_changes[overlap_start] = (
+            occupancy_changes.get(overlap_start, 0) + booking.required_units
+        )
+        occupancy_changes[overlap_end] = (
+            occupancy_changes.get(overlap_end, 0) - booking.required_units
+        )
+
+    occupied_units = 0
+    peak_occupied_units = 0
+    for day in sorted(occupancy_changes):
+        occupied_units += occupancy_changes[day]
+        peak_occupied_units = max(peak_occupied_units, occupied_units)
+    return peak_occupied_units
 
 
 class CatalogService:
@@ -170,7 +195,7 @@ class AvailabilitySearchService:
                 if not specification.is_satisfied_by(candidate):
                     continue
                 required_units = room_type.units_for(query.guest_count)
-                reserved = _reserved_units(bookings, room_type.id, query.stay)
+                reserved = _peak_reserved_units(bookings, room_type.id, query.stay)
                 available = room_type.total_units - reserved
                 if available < required_units:
                     continue
@@ -267,7 +292,7 @@ class BookingService:
 
         with self._locks.lock(f"room_type:{room_type.id}"):
             required_units = room_type.units_for(command.guest_count)
-            reserved = _reserved_units(self._bookings.list(), room_type.id, command.stay)
+            reserved = _peak_reserved_units(self._bookings.list(), room_type.id, command.stay)
             available = room_type.total_units - reserved
             if available < required_units:
                 logger.warning(

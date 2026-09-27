@@ -1,7 +1,8 @@
-# Hotieler design notes
+# Hotel Booking Service design
 
-This document is an interview aid for the backend implementation. The README remains the
-entry point for running and exercising the service.
+This document describes the service architecture, domain invariants, consistency
+boundaries, extension points, and trade-offs. The README remains the entry point for
+running and exercising the service.
 
 ## Dependency direction
 
@@ -100,11 +101,11 @@ sequenceDiagram
 
     A->>L: acquire room_type:{id}
     B->>L: wait
-    A->>R: sum overlapping active units
+    A->>R: calculate peak nightly active units
     A->>R: save PENDING_PAYMENT booking
     A-->>L: release
     L-->>B: acquire
-    B->>R: sum overlapping active units again
+    B->>R: calculate peak nightly active units again
     R-->>B: no remaining inventory
     B-->>B: raise ROOM_INVENTORY_UNAVAILABLE
     B-->>L: release
@@ -115,6 +116,14 @@ same availability calculation inside the keyed critical section. Lock granularit
 room type, so unrelated inventory can be booked concurrently. The lock is process-local,
 matching the in-memory/single-worker scope; a multi-instance design would move the
 invariant into a transactional database or distributed inventory allocator.
+
+Room types are pooled interchangeable units, not pre-assigned physical room numbers. For a
+requested half-open stay, the service clips every active reservation to that stay, applies
+its unit delta at check-in/check-out boundaries, and uses the maximum concurrent total.
+The capacity condition is therefore based on peak nightly occupancy rather than the sum of
+all reservations touching any portion of the request. If immutable physical room assignments
+were added later, availability would instead need to find specific room IDs that remain free
+for the complete stay.
 
 ## Observability and failure flow
 
@@ -151,9 +160,9 @@ disabled to avoid a second uncorrelated request stream.
 
 Validation and domain failures use the same public error envelope and are logged as
 structured rejection events. Unexpected failures expose only
-`INTERNAL_SERVER_ERROR`; the stack trace remains server-side. This is useful evaluator
-diagnostics, not a claim of production monitoring: there is no metrics backend, trace
-exporter, alerting, or centralized retention in this submission.
+`INTERNAL_SERVER_ERROR`; the stack trace remains server-side. This provides local
+diagnostics, not production monitoring: there is no metrics backend, trace exporter,
+alerting, or centralized retention.
 
 ## Payment consistency boundary
 
@@ -166,7 +175,7 @@ The current adapters do not provide a transaction spanning `BookingRepository` a
 `PaymentRepository`. After the mock processor returns, `PaymentService` transitions and
 saves the booking, then saves the payment record. A repository failure or process crash
 between those writes can therefore leave a transitioned booking without its payment
-record. That failure mode is accepted for deterministic in-memory assessment adapters; it
+record. That failure mode is accepted for deterministic in-memory adapters; it
 must not be described as production-grade payment atomicity.
 
 With durable infrastructure, the booking transition, payment result, and idempotency
@@ -204,41 +213,13 @@ rules are included.
 
 | Decision | Benefit | Cost / boundary |
 |---|---|---|
-| In-memory repositories behind protocols | Small, deterministic assessment slice | Restart loses state; no cross-process transactions |
+| In-memory repositories behind protocols | Small, deterministic service boundary | Restart loses state; no cross-process transactions |
 | One Uvicorn worker | Process-local locks enforce the invariant | Vertical-only runtime until storage/locking changes |
 | Pending booking as inventory hold | Payment cannot oversell after booking creation | Holds never expire in this version |
 | Deterministic mock payment | Success and failure are testable without credentials | No gateway webhook or uncertain external outcome |
 | Booking-time snapshots | Historical price and capacity calculation stay stable | Catalog edits do not reprice existing bookings |
 | Calendar-day refund policy | Boundaries are simple and testable | Real systems need time zone, property, and rate-plan rules |
 | Request fingerprint idempotency | Safe payment replay with conflict detection | Durable storage is required before horizontal scaling |
-| JSON request/business logs | Correlatable evaluator diagnostics without extra runtime services | No centralized retention, metrics, traces, or alerting |
-| Separate booking/payment saves | Keeps repository ports narrow for the in-memory assessment | No atomic commit across records; production needs a transaction and reconciliation |
+| JSON request/business logs | Correlatable local diagnostics without extra runtime services | No centralized retention, metrics, traces, or alerting |
+| Separate booking/payment saves | Keeps repository ports narrow for the in-memory implementation | No atomic commit across records; production needs a transaction and reconciliation |
 | Empty startup plus API-driven local samples | Fresh clones expose only real product behavior; `./run.sh seed` exercises public onboarding paths | This is a developer client, not a durable SQL/database seed; restart clears it |
-
-## Likely follow-up questions
-
-**Why not a generic repository or base service?** Narrow use-case protocols expose only
-operations consumers need. Generic abstractions would hide domain intent without buying a
-real substitution point.
-
-**How would PostgreSQL change booking?** In one transaction, lock the room-type inventory
-row (or use an atomic capacity ledger), recompute overlapping active reservations, insert
-the booking, and commit. Add database uniqueness for idempotency keys and use retry rules
-for serialization/deadlock errors.
-
-**How would payment become asynchronous?** Persist a payment attempt before dispatch,
-model pending/unknown gateway outcomes, consume signed webhooks idempotently, and reconcile
-ambiguous attempts rather than retrying blindly.
-
-**Can the current payment flow survive a crash between writes?** No. The booking and
-payment repositories have no shared transaction. A production adapter would commit the
-state transition, payment result, and idempotency record atomically, while an outbox and
-reconciliation process would cover the external-provider boundary.
-
-**How would holds expire?** Give pending bookings an expiry timestamp, exclude expired
-holds during authoritative availability checks, and run an idempotent cleanup/reconciliation
-job. Payment confirmation must atomically reject an already expired hold.
-
-**Why store required units and quoted total?** They are facts accepted when the booking was
-made. Recomputing them from mutable room capacity or rates would corrupt history and refund
-calculations.
