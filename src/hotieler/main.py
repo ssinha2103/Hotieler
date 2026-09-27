@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from hotieler.api.error_handlers import install_error_handlers
 from hotieler.api.observability import RequestLoggingMiddleware, configure_logging
+from hotieler.api.request_limits import RequestBodyLimitMiddleware
 from hotieler.api.routes import router
 from hotieler.api.schemas import HealthResponse
 from hotieler.container import AppContainer, build_container
@@ -49,6 +50,9 @@ def create_app(container: AppContainer | None = None) -> FastAPI:
         ),
         openapi_tags=OPENAPI_TAGS,
     )
+    # Add the logger last so it remains the outer user middleware and records
+    # request-size rejections with the same request-ID contract.
+    app.add_middleware(RequestBodyLimitMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
     app.state.container = resolved_container
     install_error_handlers(app)

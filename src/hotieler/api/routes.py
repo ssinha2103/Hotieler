@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Header, Path, Query, Request, status
 
+from hotieler.api.request_limits import MAX_REQUEST_BODY_BYTES
 from hotieler.api.schemas import (
     AmenityLabel,
     AvailabilityResponse,
@@ -41,6 +42,25 @@ from hotieler.domain.value_objects import Money, StayPeriod
 router = APIRouter(prefix="/api/v1")
 
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    400: {
+        "model": ErrorResponse,
+        "description": "The JSON request body could not be parsed.",
+        "content": {
+            "application/json": {
+                "examples": {
+                    "bad_request": {
+                        "value": {
+                            "error": {
+                                "code": "BAD_REQUEST",
+                                "message": "The request body could not be parsed.",
+                                "details": {"errors": []},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    },
     404: {
         "model": ErrorResponse,
         "description": "The requested resource does not exist.",
@@ -91,6 +111,25 @@ ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
                                 "code": "INTERNAL_SERVER_ERROR",
                                 "message": "An unexpected internal error occurred.",
                                 "details": {},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    },
+    413: {
+        "model": ErrorResponse,
+        "description": "The request body exceeded the supported size limit.",
+        "content": {
+            "application/json": {
+                "examples": {
+                    "payload_too_large": {
+                        "value": {
+                            "error": {
+                                "code": "PAYLOAD_TOO_LARGE",
+                                "message": "The request body is too large.",
+                                "details": {"max_bytes": MAX_REQUEST_BODY_BYTES},
                             }
                         }
                     }
@@ -260,7 +299,12 @@ def _container(request: Request) -> AppContainer:
     tags=["Owners"],
     response_model=OwnerResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={422: ERROR_RESPONSES[422], 500: ERROR_RESPONSES[500]},
+    responses={
+        400: ERROR_RESPONSES[400],
+        413: ERROR_RESPONSES[413],
+        422: ERROR_RESPONSES[422],
+        500: ERROR_RESPONSES[500],
+    },
     summary="Create an owner account",
 )
 def create_owner(payload: CreateOwnerRequest, request: Request) -> OwnerResponse:
@@ -276,6 +320,8 @@ def create_owner(payload: CreateOwnerRequest, request: Request) -> OwnerResponse
     response_model=PropertyResponse,
     status_code=status.HTTP_201_CREATED,
     responses={
+        400: ERROR_RESPONSES[400],
+        413: ERROR_RESPONSES[413],
         404: ERROR_RESPONSES[404],
         422: ERROR_RESPONSES[422],
         500: ERROR_RESPONSES[500],
@@ -330,14 +376,29 @@ def search_properties(
     locality: Annotated[str | None, Query(min_length=1, max_length=120)] = None,
     min_price: Annotated[
         Decimal | None,
-        Query(ge=0, max_digits=14, decimal_places=2),
+        Query(
+            ge=0,
+            le=Decimal("999999999999.99"),
+            multiple_of=0.01,
+            max_digits=14,
+            decimal_places=2,
+        ),
     ] = None,
     max_price: Annotated[
         Decimal | None,
-        Query(ge=0, max_digits=14, decimal_places=2),
+        Query(
+            ge=0,
+            le=Decimal("999999999999.99"),
+            multiple_of=0.01,
+            max_digits=14,
+            decimal_places=2,
+        ),
     ] = None,
     amenities: Annotated[list[AmenityLabel] | None, Query(max_length=100)] = None,
-    min_star_rating: Annotated[Decimal | None, Query(ge=1, le=5)] = None,
+    min_star_rating: Annotated[
+        Decimal | None,
+        Query(ge=1, le=5, multiple_of=0.1),
+    ] = None,
 ) -> list[AvailabilityResponse]:
     query = SearchQuery(
         city=city,
@@ -359,6 +420,8 @@ def search_properties(
     response_model=BookingResponse,
     status_code=status.HTTP_201_CREATED,
     responses={
+        400: ERROR_RESPONSES[400],
+        413: ERROR_RESPONSES[413],
         404: ERROR_RESPONSES[404],
         409: BOOKING_CONFLICT_RESPONSE,
         422: ERROR_RESPONSES[422],
@@ -409,6 +472,8 @@ def get_booking(
             "description": "Processed or safely replayed payment result.",
             "content": {"application/json": {"examples": PAYMENT_RESPONSE_EXAMPLES}},
         },
+        400: ERROR_RESPONSES[400],
+        413: ERROR_RESPONSES[413],
         404: ERROR_RESPONSES[404],
         409: PAYMENT_CONFLICT_RESPONSE,
         422: ERROR_RESPONSES[422],

@@ -170,6 +170,9 @@ Payment commands acquire locks in a fixed order: the idempotency key first, then
 booking. This makes same-key replay and booking-state transitions serializable inside the
 single process. A stored payment record snapshots the booking status at processing time,
 so replay returns the original payment result even if the booking was cancelled later.
+The in-memory payment repository independently enforces unique payment IDs, idempotency
+keys, and booking IDs, so its zero-or-one-payment-per-booking cardinality is not dependent
+only on service call order.
 
 The current adapters do not provide a transaction spanning `BookingRepository` and
 `PaymentRepository`. After the mock processor returns, `PaymentService` transitions and

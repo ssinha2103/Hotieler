@@ -58,7 +58,8 @@ HOTIELER_PORT=9000 ./run.sh --no-open
 ```
 
 `HOTIELER_BASE_URL` is an optional browser-URL override for proxies or unusual local
-setups. `HOTIELER_START_TIMEOUT_SECONDS` changes the positive-integer startup timeout.
+setups. `HOTIELER_START_TIMEOUT_SECONDS` changes the startup timeout within the supported
+range of 1 to 86,400 seconds.
 
 Useful launcher commands:
 
@@ -179,6 +180,10 @@ Business errors use one stable envelope:
 }
 ```
 
+JSON request bodies are capped at 1 MiB. The limit is enforced both from a declared
+`Content-Length` and while streamed chunks are received; oversized requests return
+`413 Payload Too Large` using the same error envelope.
+
 ## Request tracing and structured logs
 
 Every HTTP response includes `X-Request-ID`. A caller-supplied ID is reused only when it is
@@ -252,7 +257,7 @@ make smoke             # isolated container health/OpenAPI/runtime assertions
 
 Every Python command above runs in a disposable Docker container. `make smoke` additionally
 proves that the built API becomes healthy, serves OpenAPI, runs as a non-root user, and has
-exactly one Uvicorn process. Barrier-backed concurrency tests cover
+exactly one Uvicorn process. Deterministically synchronized concurrency tests cover
 overselling, same-key payment replay, payment-versus-cancellation races, and inventory
 reuse after rejection or cancellation. `make lock` refreshes the committed `uv.lock`
 inside Docker.

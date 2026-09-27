@@ -23,6 +23,7 @@ logger = logging.getLogger("hotieler.api.errors")
 
 _HTTP_ERRORS = {
     400: ("BAD_REQUEST", "The request body could not be parsed."),
+    413: ("PAYLOAD_TOO_LARGE", "The request body is too large."),
     404: ("ROUTE_NOT_FOUND", "The requested route was not found."),
     405: ("METHOD_NOT_ALLOWED", "The HTTP method is not allowed for this route."),
 }

@@ -102,6 +102,7 @@ class InMemoryPaymentRepository:
     def __init__(self) -> None:
         self._payments: dict[UUID, PaymentRecord] = {}
         self._idempotency_index: dict[str, UUID] = {}
+        self._booking_index: dict[UUID, UUID] = {}
         self._lock = RLock()
 
     def save(self, payment: PaymentRecord) -> None:
@@ -118,8 +119,15 @@ class InMemoryPaymentRepository:
                     "A payment already exists for this idempotency key.",
                     details={"idempotency_key": snapshot.idempotency_key},
                 )
+            existing_id = self._booking_index.get(snapshot.booking_id)
+            if existing_id is not None and existing_id != snapshot.id:
+                raise DuplicateResourceError(
+                    "A payment already exists for this booking.",
+                    details={"booking_id": str(snapshot.booking_id)},
+                )
             self._payments[snapshot.id] = snapshot
             self._idempotency_index[snapshot.idempotency_key] = snapshot.id
+            self._booking_index[snapshot.booking_id] = snapshot.id
 
     def get_by_idempotency_key(self, key: str) -> PaymentRecord | None:
         with self._lock:

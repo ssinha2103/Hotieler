@@ -1,11 +1,25 @@
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
 
-from hotieler.domain.entities import Booking, CancellationRecord, RoomType
-from hotieler.domain.enums import BookingStatus, RefundStatus
+from hotieler.domain.entities import (
+    Booking,
+    CancellationRecord,
+    OwnerAccount,
+    PaymentRecord,
+    RoomType,
+)
+from hotieler.domain.enums import (
+    BookingStatus,
+    MockPaymentOutcome,
+    PaymentMethod,
+    PaymentStatus,
+    RefundStatus,
+)
 from hotieler.domain.errors import (
     CancellationNotAllowedError,
     DomainValidationError,
@@ -38,6 +52,39 @@ def booking(
     return created
 
 
+def payment_record(**overrides: Any) -> PaymentRecord:
+    values: dict[str, Any] = {
+        "id": UUID(int=10),
+        "booking_id": UUID(int=1),
+        "method": PaymentMethod.CARD,
+        "amount": Money(Decimal("4000")),
+        "status": PaymentStatus.APPROVED,
+        "mock_outcome": MockPaymentOutcome.APPROVED,
+        "provider_reference": "provider-10",
+        "idempotency_key": "payment-key",
+        "fingerprint": "payment-fingerprint",
+        "booking_status_after": BookingStatus.CONFIRMED,
+        "created_at": NOW,
+    }
+    values.update(overrides)
+    return PaymentRecord(**values)
+
+
+def confirmed_cancelled_booking(
+    cancelled_at: datetime = NOW,
+) -> Booking:
+    value = booking(status=BookingStatus.CONFIRMED)
+    value.cancel(
+        CancellationRecord(
+            cancelled_at=cancelled_at,
+            refund_amount=Money(Decimal("4000")),
+            refund_percentage=Decimal("100"),
+            refund_status=RefundStatus.CALCULATED,
+        )
+    )
+    return value
+
+
 def test_room_type_calculates_ceiling_room_units() -> None:
     room = RoomType(
         id=UUID(int=1),
@@ -53,6 +100,61 @@ def test_room_type_calculates_ceiling_room_units() -> None:
     assert room.units_for(2) == 1
     assert room.units_for(3) == 2
     assert room.amenities == frozenset({"wifi", "pool"})
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Forest\x00House", "Forest\x1fHouse", "Forest\x7fHouse", "Forest\x9fHouse"],
+)
+def test_human_readable_entity_text_rejects_control_characters(name: str) -> None:
+    with pytest.raises(DomainValidationError, match="cannot contain control characters"):
+        OwnerAccount(
+            id=UUID(int=1),
+            name=name,
+            contact_email="owner@example.com",
+            created_at=NOW,
+        )
+
+
+def test_booking_direct_construction_requires_booking_status_enum() -> None:
+    value = booking()
+
+    with pytest.raises(DomainValidationError, match="status must be a BookingStatus value"):
+        replace(value, status=cast(BookingStatus, "BOGUS"))
+
+
+def test_cancellation_record_requires_refund_status_enum() -> None:
+    with pytest.raises(
+        DomainValidationError,
+        match="refund_status must be a RefundStatus value",
+    ):
+        CancellationRecord(
+            cancelled_at=NOW,
+            refund_amount=Money.zero(),
+            refund_percentage=Decimal("0"),
+            refund_status=cast(RefundStatus, "NOT_REQUIRED"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value", "enum_name"),
+    [
+        ("method", "CRYPTO", "PaymentMethod"),
+        ("status", "PENDING", "PaymentStatus"),
+        ("mock_outcome", "TIMEOUT", "MockPaymentOutcome"),
+        ("booking_status_after", "PAID", "BookingStatus"),
+    ],
+)
+def test_payment_record_requires_enum_instances(
+    field_name: str,
+    invalid_value: str,
+    enum_name: str,
+) -> None:
+    with pytest.raises(
+        DomainValidationError,
+        match=rf"{field_name} must be a {enum_name} value",
+    ):
+        payment_record(**{field_name: invalid_value})
 
 
 def test_booking_owns_confirmation_and_failed_payment_transitions() -> None:
@@ -123,6 +225,33 @@ def test_booking_cancellation_is_repeat_safe_at_entity_boundary() -> None:
     assert first == second
     assert value.status is BookingStatus.CANCELLED
     assert not value.reserves_inventory
+
+
+def test_reconstructed_cancelled_booking_with_refund_requires_payment_id() -> None:
+    value = confirmed_cancelled_booking()
+
+    with pytest.raises(
+        DomainValidationError,
+        match="calculated refund requires a payment identifier",
+    ):
+        replace(value, payment_id=None)
+
+
+def test_reconstructed_booking_rejects_malformed_payment_id() -> None:
+    value = confirmed_cancelled_booking()
+
+    with pytest.raises(DomainValidationError, match="Payment identifier must be a UUID"):
+        replace(value, payment_id=cast(UUID, "not-a-uuid"))
+
+
+def test_reconstructed_cancellation_timestamp_must_equal_booking_update() -> None:
+    value = confirmed_cancelled_booking(NOW + timedelta(hours=2))
+
+    with pytest.raises(
+        DomainValidationError,
+        match="updated_at must equal cancelled_at",
+    ):
+        replace(value, updated_at=NOW + timedelta(hours=1))
 
 
 @pytest.mark.parametrize(

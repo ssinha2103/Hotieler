@@ -113,6 +113,53 @@ def test_openapi_schema_exposes_the_complete_public_http_contract() -> None:
     assert owner_schema["properties"]["contact_email"]["format"] == "email"
     assert owner_schema["examples"]
 
+    body_operations = (
+        schema["paths"]["/api/v1/owners"]["post"],
+        schema["paths"]["/api/v1/owners/{owner_id}/properties"]["post"],
+        schema["paths"]["/api/v1/bookings"]["post"],
+        payment_operation,
+    )
+    assert all("400" in operation["responses"] for operation in body_operations)
+    assert all("413" in operation["responses"] for operation in body_operations)
+
+    money_schema = schema["components"]["schemas"]["MoneyInput"]["properties"]
+    numeric_amount = next(
+        branch for branch in money_schema["amount"]["anyOf"] if branch.get("type") == "number"
+    )
+    assert numeric_amount["multipleOf"] == 0.01
+    assert numeric_amount["maximum"] == 999_999_999_999.99
+    assert money_schema["currency"]["enum"] == ["INR"]
+    assert schema["components"]["schemas"]["MoneyResponse"]["properties"]["currency"] == {
+        "type": "string",
+        "const": "INR",
+        "title": "Currency",
+    }
+
+    property_schema = schema["components"]["schemas"]["CreatePropertyRequest"]
+    numeric_rating = next(
+        branch
+        for branch in property_schema["properties"]["star_rating"]["anyOf"]
+        if branch.get("type") == "number"
+    )
+    assert numeric_rating["multipleOf"] == 0.1
+
+    search_parameters = schema["paths"]["/api/v1/properties/search"]["get"]["parameters"]
+    parameters_by_name = {parameter["name"]: parameter for parameter in search_parameters}
+    for parameter_name in ("min_price", "max_price"):
+        numeric_price = next(
+            branch
+            for branch in parameters_by_name[parameter_name]["schema"]["anyOf"]
+            if branch.get("type") == "number"
+        )
+        assert numeric_price["multipleOf"] == 0.01
+        assert numeric_price["maximum"] == 999_999_999_999.99
+    numeric_minimum_rating = next(
+        branch
+        for branch in parameters_by_name["min_star_rating"]["schema"]["anyOf"]
+        if branch.get("type") == "number"
+    )
+    assert numeric_minimum_rating["multipleOf"] == 0.1
+
     booking_response_schema = schema["components"]["schemas"]["BookingResponse"]
     assert "cancellation" not in booking_response_schema["required"]
     cancellation_schema = booking_response_schema["properties"]["cancellation"]

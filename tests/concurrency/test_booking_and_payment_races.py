@@ -17,17 +17,16 @@ from hotieler.application.models import (
     RoomTypeInput,
 )
 from hotieler.application.ports import BookingRepository, KeyedLockManager, PaymentRepository
-from hotieler.application.services import BookingService, PaymentService
+from hotieler.application.services import BookingService, CancellationService, PaymentService
 from hotieler.container import AppContainer, build_container
 from hotieler.domain.entities import Booking, PaymentRecord
-from hotieler.domain.enums import BookingStatus, MockPaymentOutcome, PaymentMethod
+from hotieler.domain.enums import BookingStatus, MockPaymentOutcome, PaymentMethod, RefundStatus
 from hotieler.domain.errors import (
-    ConflictError,
     DuplicateResourceError,
     InvalidBookingTransitionError,
     RoomInventoryUnavailableError,
 )
-from hotieler.domain.policies import StandardPricingStrategy
+from hotieler.domain.policies import DefaultCancellationPolicy, StandardPricingStrategy
 from hotieler.domain.value_objects import Money, StayPeriod
 from hotieler.infrastructure.clock import DeterministicIdGenerator, FixedClock
 from hotieler.infrastructure.locking import InMemoryKeyedLockManager
@@ -511,7 +510,9 @@ def test_distinct_payment_keys_are_serialized_by_the_booking_lock() -> None:
     assert locks.active_key_count == 0
 
 
-def test_distinct_payment_keys_double_process_when_only_booking_lock_is_bypassed() -> None:
+def test_distinct_payment_keys_double_process_without_booking_lock() -> None:
+    """The repository guard cannot undo two external processor invocations."""
+
     container, booking_command = _container_with_one_room()
     booking = container.booking_service.create(booking_command)
     repository = _BarrierGetBookingRepository(container.booking_repository)
@@ -532,12 +533,25 @@ def test_distinct_payment_keys_double_process_when_only_booking_lock_is_bypassed
         for key in ("unsafe-distinct-payment-key-1", "unsafe-distinct-payment-key-2")
     )
 
+    def attempt(
+        command: ProcessPaymentCommand,
+    ) -> PaymentCommandResult | DuplicateResourceError:
+        try:
+            return service.process(command)
+        except DuplicateResourceError as exc:
+            return exc
+
     with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(service.process, command) for command in commands]
+        futures = [executor.submit(attempt, command) for command in commands]
         results = [future.result(timeout=_WAIT_TIMEOUT_SECONDS) for future in futures]
 
-    assert all(result.replayed is False for result in results)
-    assert all(result.booking.status is BookingStatus.CONFIRMED for result in results)
+    processed = [result for result in results if isinstance(result, PaymentCommandResult)]
+    duplicates = [result for result in results if isinstance(result, DuplicateResourceError)]
+    assert len(processed) == 1
+    assert len(duplicates) == 1
+    assert processed[0].replayed is False
+    assert processed[0].booking.status is BookingStatus.CONFIRMED
+    assert duplicates[0].details == {"booking_id": str(booking.id)}
     assert processor.process_count == 2
     assert locks.booking_bypass_count == 2
     assert locks.idempotency_lock_count == 2
@@ -546,16 +560,13 @@ def test_distinct_payment_keys_double_process_when_only_booking_lock_is_bypassed
         container.payment_repository.get_by_idempotency_key(command.idempotency_key)
         for command in commands
     ]
-    assert all(payment is not None for payment in persisted)
-    payment_ids = {result.payment.id for result in results}
-    assert len(payment_ids) == 2
-    assert {payment.id for payment in persisted if payment is not None} == payment_ids
+    assert sum(payment is not None for payment in persisted) == 1
+    assert {payment.id for payment in persisted if payment is not None} == {processed[0].payment.id}
 
     final_booking = container.booking_repository.get(booking.id)
     assert final_booking is not None
     assert final_booking.status is BookingStatus.CONFIRMED
-    assert final_booking.payment_id in payment_ids
-    assert len(payment_ids - {final_booking.payment_id}) == 1
+    assert final_booking.payment_id is not None
     assert locks.active_key_count == 0
 
 
@@ -594,43 +605,104 @@ def test_payment_race_control_invokes_processor_twice_without_the_idempotency_lo
     assert container.payment_repository.get_by_idempotency_key(command.idempotency_key) is not None
 
 
-def test_payment_and_cancellation_race_reaches_a_valid_terminal_state() -> None:
+def test_payment_and_cancellation_share_the_booking_lock() -> None:
     container, booking_command = _container_with_one_room()
     booking = container.booking_service.create(booking_command)
-    barrier = Barrier(2)
+    repository = _FirstGetBlockingBookingRepository(container.booking_repository)
+    booking_lock_key = f"booking:{booking.id}"
+    locks = _ObservedKeyedLockManager(booking_lock_key)
+    payment_service, processor = _payment_service(
+        container,
+        repository,
+        container.payment_repository,
+        locks,
+    )
+    cancellation_service = CancellationService(
+        bookings=repository,
+        policy=DefaultCancellationPolicy(),
+        clock=FixedClock(_NOW),
+        locks=locks,
+    )
     payment_command = ProcessPaymentCommand(
         booking_id=booking.id,
-        method=PaymentMethod.CARD,
+        method=PaymentMethod.WALLET,
         mock_outcome=MockPaymentOutcome.APPROVED,
         idempotency_key="payment-cancel-race",
     )
 
-    def pay() -> PaymentCommandResult | ConflictError:
-        barrier.wait()
-        try:
-            return container.payment_service.process(payment_command)
-        except ConflictError as exc:
-            return exc
-
-    def cancel() -> Booking:
-        barrier.wait()
-        return container.cancellation_service.cancel(booking.id)
-
     with ThreadPoolExecutor(max_workers=2) as executor:
-        payment_future = executor.submit(pay)
-        cancellation_future = executor.submit(cancel)
-        payment_result = payment_future.result()
-        cancellation_result = cancellation_future.result()
+        payment_future = executor.submit(payment_service.process, payment_command)
+        assert repository.first_get_entered.wait(_WAIT_TIMEOUT_SECONDS)
+        cancellation_future = executor.submit(cancellation_service.cancel, booking.id)
+        try:
+            assert locks.second_attempted.wait(_WAIT_TIMEOUT_SECONDS)
+            assert locks.watched_attempts == 2
+            assert repository.get_calls == 1
+            assert processor.process_count == 0
+            assert not cancellation_future.done()
+        finally:
+            repository.release_first_get.set()
+        payment_result = payment_future.result(timeout=_WAIT_TIMEOUT_SECONDS)
+        cancellation_result = cancellation_future.result(timeout=_WAIT_TIMEOUT_SECONDS)
 
-    assert isinstance(cancellation_result, Booking)
+    assert payment_result.booking.status is BookingStatus.CONFIRMED
+    assert processor.process_count == 1
     assert cancellation_result.status is BookingStatus.CANCELLED
-    if isinstance(payment_result, PaymentCommandResult):
-        assert payment_result.booking.status is BookingStatus.CONFIRMED
-    else:
-        assert isinstance(payment_result, ConflictError)
+    assert cancellation_result.cancellation is not None
+    assert cancellation_result.cancellation.refund_status is RefundStatus.CALCULATED
+    assert cancellation_result.cancellation.refund_percentage == Decimal("100")
+    assert repository.get_calls == 2
 
-    final_booking = container.booking_service.get(booking.id)
+    final_booking = container.booking_repository.get(booking.id)
+    assert final_booking is not None
     assert final_booking.status is BookingStatus.CANCELLED
     replacement = container.booking_service.create(booking_command)
     assert replacement.status is BookingStatus.PENDING_PAYMENT
-    assert container.lock_manager.active_key_count == 0
+    assert locks.active_key_count == 0
+
+
+def test_payment_and_cancellation_can_both_succeed_when_only_booking_lock_is_bypassed() -> None:
+    """Mutation control: two successful results cannot occur under any serial ordering."""
+
+    container, booking_command = _container_with_one_room()
+    booking = container.booking_service.create(booking_command)
+    repository = _BarrierGetBookingRepository(container.booking_repository)
+    locks = _BookingLockBypassKeyedLockManager()
+    payment_service, processor = _payment_service(
+        container,
+        repository,
+        container.payment_repository,
+        locks,
+    )
+    cancellation_service = CancellationService(
+        bookings=repository,
+        policy=DefaultCancellationPolicy(),
+        clock=FixedClock(_NOW),
+        locks=locks,
+    )
+    payment_command = ProcessPaymentCommand(
+        booking_id=booking.id,
+        method=PaymentMethod.WALLET,
+        mock_outcome=MockPaymentOutcome.APPROVED,
+        idempotency_key="unsafe-payment-cancel-race",
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        payment_future = executor.submit(payment_service.process, payment_command)
+        cancellation_future = executor.submit(cancellation_service.cancel, booking.id)
+        payment_result = payment_future.result(timeout=_WAIT_TIMEOUT_SECONDS)
+        cancellation_result = cancellation_future.result(timeout=_WAIT_TIMEOUT_SECONDS)
+
+    assert payment_result.booking.status is BookingStatus.CONFIRMED
+    assert cancellation_result.status is BookingStatus.CANCELLED
+    assert cancellation_result.cancellation is not None
+    assert cancellation_result.cancellation.refund_status is RefundStatus.NOT_REQUIRED
+    assert cancellation_result.cancellation.refund_percentage == Decimal("0")
+    assert processor.process_count == 1
+    assert locks.booking_bypass_count == 2
+    assert locks.idempotency_lock_count == 1
+    assert locks.active_key_count == 0
+
+    final_booking = container.booking_repository.get(booking.id)
+    assert final_booking is not None
+    assert final_booking.status in {BookingStatus.CONFIRMED, BookingStatus.CANCELLED}

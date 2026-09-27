@@ -6,7 +6,8 @@ readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly SERVICE="api"
 readonly CONTAINER_PORT="8000"
-readonly START_TIMEOUT_SECONDS="${HOTIELER_SMOKE_TIMEOUT_SECONDS:-120}"
+START_TIMEOUT_SECONDS="${HOTIELER_SMOKE_TIMEOUT_SECONDS:-120}"
+NORMALIZED_INTEGER=""
 readonly PROJECT_NAME="${HOTIELER_SMOKE_PROJECT_NAME:-hotieler-smoke-${PPID}-$$}"
 readonly TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hotieler-smoke.XXXXXX")"
 readonly LOG_FILE="${HOTIELER_SMOKE_LOG_FILE:-${TEMP_DIR}/compose.log}"
@@ -24,15 +25,45 @@ fail() {
   return 1
 }
 
-validate_configuration() {
-  case "${START_TIMEOUT_SECONDS}" in
+normalize_bounded_integer() {
+  local raw_value="$1"
+  local minimum="$2"
+  local maximum="$3"
+  local error_message="$4"
+  local leading_zeroes=""
+  local normalized=""
+
+  case "$raw_value" in
     '' | *[!0-9]*)
-      fail "HOTIELER_SMOKE_TIMEOUT_SECONDS must be a positive integer."
-      ;;
-    0)
-      fail "HOTIELER_SMOKE_TIMEOUT_SECONDS must be greater than zero."
+      fail "$error_message"
+      return 1
       ;;
   esac
+
+  leading_zeroes="${raw_value%%[!0]*}"
+  normalized="${raw_value#"$leading_zeroes"}"
+  if [[ -z "$normalized" ]]; then
+    normalized="0"
+  fi
+
+  if (( ${#normalized} > ${#maximum} )) \
+    || { (( ${#normalized} == ${#maximum} )) && [[ "$normalized" > "$maximum" ]]; }; then
+    fail "$error_message"
+    return 1
+  fi
+
+  NORMALIZED_INTEGER=$((10#${normalized}))
+  if (( NORMALIZED_INTEGER < minimum )); then
+    fail "$error_message"
+    return 1
+  fi
+}
+
+validate_configuration() {
+  normalize_bounded_integer \
+    "${START_TIMEOUT_SECONDS}" 1 86400 \
+    "HOTIELER_SMOKE_TIMEOUT_SECONDS must be an integer between 1 and 86400."
+  START_TIMEOUT_SECONDS="${NORMALIZED_INTEGER}"
 
   if [[ ! "${PROJECT_NAME}" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
     fail "HOTIELER_SMOKE_PROJECT_NAME must contain only lowercase letters, digits, hyphens, or underscores."

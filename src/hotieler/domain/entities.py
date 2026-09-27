@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from enum import Enum
 from uuid import UUID
 
 from hotieler.domain.enums import (
@@ -22,6 +23,8 @@ def _required_text(value: str, field_name: str) -> str:
     normalized = value.strip()
     if not normalized:
         raise DomainValidationError(f"{field_name} cannot be blank.")
+    if any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in normalized):
+        raise DomainValidationError(f"{field_name} cannot contain control characters.")
     return normalized
 
 
@@ -29,6 +32,12 @@ def _utc(value: datetime, field_name: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise DomainValidationError(f"{field_name} must be timezone-aware.")
     return value.astimezone(UTC)
+
+
+def _required_enum[EnumT: Enum](value: object, enum_type: type[EnumT], field_name: str) -> EnumT:
+    if not isinstance(value, enum_type):
+        raise DomainValidationError(f"{field_name} must be a {enum_type.__name__} value.")
+    return value
 
 
 def normalize_amenities(values: frozenset[str] | set[str] | tuple[str, ...]) -> frozenset[str]:
@@ -131,6 +140,7 @@ class CancellationRecord:
     refund_status: RefundStatus
 
     def __post_init__(self) -> None:
+        refund_status = _required_enum(self.refund_status, RefundStatus, "refund_status")
         try:
             percentage = (
                 self.refund_percentage
@@ -144,6 +154,7 @@ class CancellationRecord:
         if percentage < 0 or percentage > 100:
             raise DomainValidationError("Refund percentage must be between 0 and 100.")
         object.__setattr__(self, "refund_percentage", percentage)
+        object.__setattr__(self, "refund_status", refund_status)
         object.__setattr__(self, "cancelled_at", _utc(self.cancelled_at, "cancelled_at"))
 
 
@@ -163,6 +174,7 @@ class Booking:
     cancellation: CancellationRecord | None = None
 
     def __post_init__(self) -> None:
+        self.status = _required_enum(self.status, BookingStatus, "status")
         if self.guest_count <= 0:
             raise DomainValidationError("Guest count must be greater than zero.")
         if self.required_units <= 0:
@@ -171,6 +183,10 @@ class Booking:
         self.updated_at = _utc(self.updated_at, "updated_at")
         if self.updated_at < self.created_at:
             raise DomainValidationError("updated_at cannot be earlier than created_at.")
+        if self.payment_id is not None and not isinstance(self.payment_id, UUID):
+            raise DomainValidationError("Payment identifier must be a UUID.")
+        if self.cancellation is not None and not isinstance(self.cancellation, CancellationRecord):
+            raise DomainValidationError("cancellation must be a CancellationRecord value.")
         if self.status in {
             BookingStatus.CONFIRMED,
             BookingStatus.PAYMENT_FAILED,
@@ -184,6 +200,14 @@ class Booking:
             raise DomainValidationError("Only a cancelled booking can hold cancellation details.")
         if self.cancellation is not None:
             self._validate_cancellation(self.cancellation)
+            if self.updated_at != self.cancellation.cancelled_at:
+                raise DomainValidationError(
+                    "A cancelled booking's updated_at must equal cancelled_at."
+                )
+            if self.cancellation.refund_percentage > 0 and self.payment_id is None:
+                raise DomainValidationError(
+                    "A cancelled booking with a calculated refund requires a payment identifier."
+                )
 
     @property
     def reserves_inventory(self) -> bool:
@@ -309,23 +333,33 @@ class PaymentRecord:
     created_at: datetime
 
     def __post_init__(self) -> None:
+        method = _required_enum(self.method, PaymentMethod, "method")
+        status = _required_enum(self.status, PaymentStatus, "status")
+        mock_outcome = _required_enum(self.mock_outcome, MockPaymentOutcome, "mock_outcome")
+        booking_status_after = _required_enum(
+            self.booking_status_after, BookingStatus, "booking_status_after"
+        )
         key = _required_text(self.idempotency_key, "Idempotency key")
         fingerprint = _required_text(self.fingerprint, "Payment fingerprint")
         reference = _required_text(self.provider_reference, "Provider reference")
         expected_payment = (
             PaymentStatus.APPROVED
-            if self.mock_outcome is MockPaymentOutcome.APPROVED
+            if mock_outcome is MockPaymentOutcome.APPROVED
             else PaymentStatus.REJECTED
         )
         expected_booking = (
             BookingStatus.CONFIRMED
-            if self.status is PaymentStatus.APPROVED
+            if status is PaymentStatus.APPROVED
             else BookingStatus.PAYMENT_FAILED
         )
-        if self.status is not expected_payment or self.booking_status_after is not expected_booking:
+        if status is not expected_payment or booking_status_after is not expected_booking:
             raise DomainValidationError(
                 "Payment outcome, payment status, and booking status disagree."
             )
+        object.__setattr__(self, "method", method)
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "mock_outcome", mock_outcome)
+        object.__setattr__(self, "booking_status_after", booking_status_after)
         object.__setattr__(self, "idempotency_key", key)
         object.__setattr__(self, "fingerprint", fingerprint)
         object.__setattr__(self, "provider_reference", reference)

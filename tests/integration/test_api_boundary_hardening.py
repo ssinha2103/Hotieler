@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
 
+from hotieler.api.request_limits import MAX_REQUEST_BODY_BYTES
 from hotieler.container import build_container
 from hotieler.infrastructure.clock import DeterministicIdGenerator, FixedClock
 from hotieler.main import create_app
@@ -94,6 +95,50 @@ def test_booking_guest_count_requires_a_json_integer(invalid_value: Any) -> None
 
     error = _assert_error(response, 422, "REQUEST_VALIDATION_ERROR")
     assert error["details"]["errors"][0]["loc"][-1] == "guest_count"
+
+
+def test_human_readable_names_reject_control_characters_through_the_api() -> None:
+    client = _client()
+
+    owner = client.post(
+        "/api/v1/owners",
+        json={"name": "Unsafe\u0000Owner", "contact_email": "owner@example.com"},
+    )
+    _assert_error(owner, 422, "DOMAIN_VALIDATION_ERROR")
+
+    payload = _property_payload()
+    payload["room_types"][0]["name"] = "Unsafe\u007fRoom"
+    property_response = client.post(
+        f"/api/v1/owners/{_owner_id(client)}/properties",
+        json=payload,
+    )
+    _assert_error(property_response, 422, "DOMAIN_VALIDATION_ERROR")
+
+
+def test_decimal_step_constraints_are_enforced_at_the_http_boundary() -> None:
+    client = _client()
+    owner_id = _owner_id(client)
+    payload = _property_payload()
+    payload["star_rating"] = "4.55"
+    invalid_property = client.post(
+        f"/api/v1/owners/{owner_id}/properties",
+        json=payload,
+    )
+    _assert_error(invalid_property, 422, "REQUEST_VALIDATION_ERROR")
+
+    search_base = {
+        "city": "Bengaluru",
+        "check_in": "2026-01-15",
+        "check_out": "2026-01-17",
+        "guest_count": "2",
+    }
+    for parameter, value in (("min_price", "100.001"), ("min_star_rating", "4.55")):
+        response = client.get(
+            "/api/v1/properties/search",
+            params={**search_base, parameter: value},
+        )
+        error = _assert_error(response, 422, "REQUEST_VALIDATION_ERROR")
+        assert error["details"]["errors"][0]["loc"][-1] == parameter
 
 
 @pytest.mark.parametrize("field", ["check_in", "check_out"])
@@ -239,6 +284,41 @@ def test_transport_http_errors_use_the_stable_envelope_and_preserve_headers() ->
     wrong_method = client.get("/api/v1/owners")
     _assert_error(wrong_method, 405, "METHOD_NOT_ALLOWED")
     assert wrong_method.headers["allow"] == "POST"
+
+
+def test_request_body_limit_rejects_an_oversized_http_payload() -> None:
+    client = _client()
+    oversized_chunk = b"x" * (MAX_REQUEST_BODY_BYTES + 1)
+
+    declared = client.post(
+        "/api/v1/owners",
+        content=oversized_chunk,
+        headers={"Content-Type": "application/json"},
+    )
+    declared_error = _assert_error(declared, 413, "PAYLOAD_TOO_LARGE")
+    assert declared_error["details"] == {"max_bytes": MAX_REQUEST_BODY_BYTES}
+    assert "x-request-id" in declared.headers
+
+    streamed = client.post(
+        "/api/v1/owners",
+        content=iter((b"{", oversized_chunk)),
+        headers={"Content-Type": "application/json"},
+    )
+    streamed_error = _assert_error(streamed, 413, "PAYLOAD_TOO_LARGE")
+    assert streamed_error["details"] == {"max_bytes": MAX_REQUEST_BODY_BYTES}
+    assert "x-request-id" in streamed.headers
+
+    accepted_stream = client.post(
+        "/api/v1/owners",
+        content=iter(
+            (
+                b'{"name":"Streamed Owner",',
+                b'"contact_email":"streamed@example.com"}',
+            )
+        ),
+        headers={"Content-Type": "application/json"},
+    )
+    assert accepted_stream.status_code == 201, accepted_stream.text
 
 
 def test_openapi_documents_strict_count_date_and_amenity_shapes() -> None:

@@ -291,6 +291,8 @@ class BookingService:
             )
 
         with self._locks.lock(f"room_type:{room_type.id}"):
+            now = self._clock.now()
+            command.stay.ensure_not_in_past(now.date())
             required_units = room_type.units_for(command.guest_count)
             reserved = _peak_reserved_units(self._bookings.list(), room_type.id, command.stay)
             available = room_type.total_units - reserved
@@ -311,7 +313,6 @@ class BookingService:
                         "available_units": max(available, 0),
                     }
                 )
-            now = self._clock.now()
             booking = Booking(
                 id=self._ids.new(),
                 property_id=property.id,

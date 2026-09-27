@@ -15,7 +15,7 @@ from hotieler.application.models import (
     RoomTypeInput,
     SearchQuery,
 )
-from hotieler.application.services import PaymentService
+from hotieler.application.services import BookingService, PaymentService
 from hotieler.container import AppContainer, build_container
 from hotieler.domain.entities import Booking, Property
 from hotieler.domain.enums import (
@@ -31,11 +31,27 @@ from hotieler.domain.errors import (
     InvalidBookingTransitionError,
     ResourceNotFoundError,
 )
+from hotieler.domain.policies import StandardPricingStrategy
 from hotieler.domain.value_objects import Money, StayPeriod
 from hotieler.infrastructure.clock import DeterministicIdGenerator, FixedClock
 
 NOW = datetime(2030, 1, 1, 10, tzinfo=UTC)
 STAY = StayPeriod(date(2030, 1, 10), date(2030, 1, 12))
+
+
+class SequenceClock:
+    """Return a finite timestamp sequence so each clock read is observable."""
+
+    def __init__(self, *values: datetime) -> None:
+        self._values = values
+        self.calls = 0
+
+    def now(self) -> datetime:
+        if self.calls >= len(self._values):
+            raise AssertionError("SequenceClock received an unexpected clock read.")
+        value = self._values[self.calls]
+        self.calls += 1
+        return value
 
 
 @pytest.fixture
@@ -97,6 +113,37 @@ def create_booking(
             guest_count=guest_count,
         )
     )
+
+
+def test_booking_revalidates_stay_after_acquiring_inventory_lock(
+    container: AppContainer,
+) -> None:
+    property_ = onboard_property(container)
+    sequence_clock = SequenceClock(
+        datetime(2030, 1, 10, 23, 59, 59, tzinfo=UTC),
+        datetime(2030, 1, 11, 0, 0, 1, tzinfo=UTC),
+    )
+    service = BookingService(
+        properties=container.property_repository,
+        bookings=container.booking_repository,
+        pricing=StandardPricingStrategy(),
+        clock=sequence_clock,
+        ids=DeterministicIdGenerator(NAMESPACE_URL, prefix="midnight-boundary"),
+        locks=container.lock_manager,
+    )
+
+    with pytest.raises(DomainValidationError, match="Check-in cannot be in the past"):
+        service.create(
+            CreateBookingCommand(
+                property_id=property_.id,
+                room_type_id=property_.room_types[0].id,
+                stay=StayPeriod(date(2030, 1, 10), date(2030, 1, 12)),
+                guest_count=1,
+            )
+        )
+
+    assert sequence_clock.calls == 2
+    assert container.booking_repository.list() == []
 
 
 @pytest.mark.parametrize(

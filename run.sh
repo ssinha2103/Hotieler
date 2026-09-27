@@ -10,6 +10,7 @@ HEALTH_URL=""
 SWAGGER_URL=""
 OPENAPI_URL=""
 START_TIMEOUT_SECONDS="${HOTIELER_START_TIMEOUT_SECONDS:-90}"
+NORMALIZED_INTEGER=""
 
 ACTION="start"
 ACTION_WAS_SET=0
@@ -58,6 +59,39 @@ fail() {
   exit 1
 }
 
+normalize_bounded_integer() {
+  local raw_value="$1"
+  local minimum="$2"
+  local maximum="$3"
+  local error_message="$4"
+  local leading_zeroes=""
+  local normalized=""
+
+  case "$raw_value" in
+    '' | *[!0-9]*)
+      fail "$error_message"
+      ;;
+  esac
+
+  # Strip leading zeroes as text before using Bash arithmetic. This accepts
+  # values such as "08" and prevents oversized input from overflowing first.
+  leading_zeroes="${raw_value%%[!0]*}"
+  normalized="${raw_value#"$leading_zeroes"}"
+  if [[ -z "$normalized" ]]; then
+    normalized="0"
+  fi
+
+  if (( ${#normalized} > ${#maximum} )) \
+    || { (( ${#normalized} == ${#maximum} )) && [[ "$normalized" > "$maximum" ]]; }; then
+    fail "$error_message"
+  fi
+
+  NORMALIZED_INTEGER=$((10#${normalized}))
+  if (( NORMALIZED_INTEGER < minimum )); then
+    fail "$error_message"
+  fi
+}
+
 set_action() {
   if (( ACTION_WAS_SET )); then
     fail "only one action may be supplied"
@@ -96,31 +130,23 @@ require_docker() {
 }
 
 validate_configuration() {
-  case "$HOST_PORT" in
-    '' | *[!0-9]*)
-      fail "HOTIELER_PORT must be an integer between 1 and 65535."
-      ;;
-  esac
-  HOST_PORT=$((10#${HOST_PORT}))
-  if (( HOST_PORT < 1 || HOST_PORT > 65535 )); then
-    fail "HOTIELER_PORT must be an integer between 1 and 65535."
-  fi
+  normalize_bounded_integer \
+    "$HOST_PORT" 1 65535 \
+    "HOTIELER_PORT must be an integer between 1 and 65535."
+  HOST_PORT="$NORMALIZED_INTEGER"
 
-  case "$START_TIMEOUT_SECONDS" in
-    '' | *[!0-9]*)
-      fail "HOTIELER_START_TIMEOUT_SECONDS must be a positive integer."
-      ;;
-  esac
-  START_TIMEOUT_SECONDS=$((10#${START_TIMEOUT_SECONDS}))
-  if (( START_TIMEOUT_SECONDS == 0 )); then
-    fail "HOTIELER_START_TIMEOUT_SECONDS must be greater than zero."
-  fi
+  normalize_bounded_integer \
+    "$START_TIMEOUT_SECONDS" 1 86400 \
+    "HOTIELER_START_TIMEOUT_SECONDS must be an integer between 1 and 86400."
+  START_TIMEOUT_SECONDS="$NORMALIZED_INTEGER"
 
   export HOTIELER_PORT="$HOST_PORT"
   if [[ -z "$BASE_URL" ]]; then
     BASE_URL="http://127.0.0.1:${HOST_PORT}"
   fi
-  BASE_URL="${BASE_URL%/}"
+  while [[ "$BASE_URL" == */ ]]; do
+    BASE_URL="${BASE_URL%/}"
+  done
   case "$BASE_URL" in
     http://* | https://*) ;;
     *) fail "HOTIELER_BASE_URL must start with http:// or https://." ;;

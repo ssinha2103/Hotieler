@@ -4,8 +4,11 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUN_SCRIPT = PROJECT_ROOT / "run.sh"
+SMOKE_SCRIPT = PROJECT_ROOT / "scripts" / "docker-smoke.sh"
 
 
 def _fake_docker(tmp_path: Path) -> Path:
@@ -72,7 +75,7 @@ def test_launcher_explicit_base_url_overrides_derived_url(tmp_path: Path) -> Non
     result = _run_status(
         tmp_path,
         HOTIELER_PORT="9000",
-        HOTIELER_BASE_URL="https://hotel.test/local/",
+        HOTIELER_BASE_URL="https://hotel.test/local//",
     )
 
     assert result.returncode == 0, result.stderr
@@ -85,6 +88,47 @@ def test_launcher_rejects_out_of_range_port(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "HOTIELER_PORT must be an integer between 1 and 65535" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("variable", "message"),
+    [
+        ("HOTIELER_PORT", "HOTIELER_PORT must be an integer between 1 and 65535"),
+        (
+            "HOTIELER_START_TIMEOUT_SECONDS",
+            "HOTIELER_START_TIMEOUT_SECONDS must be an integer between 1 and 86400",
+        ),
+    ],
+)
+def test_launcher_rejects_oversized_integers_without_bash_overflow(
+    tmp_path: Path,
+    variable: str,
+    message: str,
+) -> None:
+    result = _run_status(tmp_path, **{variable: "9" * 200})
+
+    assert result.returncode == 1
+    assert message in result.stderr
+
+
+def test_smoke_launcher_rejects_oversized_timeout_without_bash_overflow(
+    tmp_path: Path,
+) -> None:
+    environment = os.environ.copy()
+    environment["PATH"] = f"{_fake_docker(tmp_path)}:{environment['PATH']}"
+    environment["HOTIELER_SMOKE_TIMEOUT_SECONDS"] = "9" * 200
+
+    result = subprocess.run(
+        [str(SMOKE_SCRIPT)],
+        cwd=PROJECT_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "HOTIELER_SMOKE_TIMEOUT_SECONDS must be an integer between 1 and 86400" in result.stderr
 
 
 def test_compose_publishes_the_api_on_loopback_only() -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -63,21 +63,27 @@ class MoneyInput(_RequestModel):
         json_schema_extra={"examples": [{"amount": "3500.00", "currency": "INR"}]}
     )
 
-    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
-    currency: str = Field(default="INR", min_length=3, max_length=3)
+    amount: Decimal = Field(
+        gt=0,
+        le=Decimal("999999999999.99"),
+        multiple_of=0.01,
+        max_digits=14,
+        decimal_places=2,
+    )
+    currency: Literal["INR"] = Field(
+        default="INR",
+        json_schema_extra={"enum": ["INR"]},
+    )
 
-    @field_validator("currency")
+    @field_validator("currency", mode="before")
     @classmethod
-    def normalize_currency(cls, value: str) -> str:
-        normalized = value.upper()
-        if normalized != "INR":
-            raise ValueError("Only INR is supported.")
-        return normalized
+    def normalize_currency(cls, value: Any) -> Any:
+        return value.strip().upper() if isinstance(value, str) else value
 
 
 class MoneyResponse(BaseModel):
     amount: str
-    currency: str
+    currency: Literal["INR"]
 
 
 class CreateOwnerRequest(_RequestModel):
@@ -140,7 +146,12 @@ class CreatePropertyRequest(_RequestModel):
     city: str = Field(min_length=1, max_length=120)
     locality: str = Field(min_length=1, max_length=120)
     address: str = Field(min_length=1, max_length=500)
-    star_rating: Decimal = Field(ge=1, le=5, decimal_places=1)
+    star_rating: Decimal = Field(
+        ge=1,
+        le=5,
+        multiple_of=0.1,
+        decimal_places=1,
+    )
     amenities: list[AmenityLabel] = Field(default_factory=list, max_length=100)
     room_types: list[RoomTypeRequest] = Field(min_length=1, max_length=100)
 
@@ -293,7 +304,9 @@ class ErrorResponse(BaseModel):
 
 
 def money_response(money: Money) -> MoneyResponse:
-    return MoneyResponse(amount=format(money.amount, "f"), currency=money.currency)
+    if money.currency != "INR":
+        raise ValueError("API money responses only support INR.")
+    return MoneyResponse(amount=format(money.amount, "f"), currency="INR")
 
 
 def owner_response(owner: OwnerAccount) -> OwnerResponse:

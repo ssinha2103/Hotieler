@@ -103,19 +103,41 @@ class FakeBookingRepository:
 
 class FakePaymentRepository:
     def __init__(self) -> None:
-        self._values: dict[str, PaymentRecord] = {}
+        self._payments: dict[UUID, PaymentRecord] = {}
+        self._idempotency_index: dict[str, UUID] = {}
+        self._booking_index: dict[UUID, UUID] = {}
         self._lock = RLock()
 
     def save(self, payment: PaymentRecord) -> None:
+        snapshot = deepcopy(payment)
         with self._lock:
-            existing = self._values.get(payment.idempotency_key)
-            if existing is not None and existing.id != payment.id:
-                raise DuplicateResourceError()
-            self._values[payment.idempotency_key] = deepcopy(payment)
+            if snapshot.id in self._payments:
+                raise DuplicateResourceError(
+                    "A payment with this identifier already exists.",
+                    details={"payment_id": str(snapshot.id)},
+                )
+            existing_id = self._idempotency_index.get(snapshot.idempotency_key)
+            if existing_id is not None and existing_id != snapshot.id:
+                raise DuplicateResourceError(
+                    "A payment already exists for this idempotency key.",
+                    details={"idempotency_key": snapshot.idempotency_key},
+                )
+            existing_id = self._booking_index.get(snapshot.booking_id)
+            if existing_id is not None and existing_id != snapshot.id:
+                raise DuplicateResourceError(
+                    "A payment already exists for this booking.",
+                    details={"booking_id": str(snapshot.booking_id)},
+                )
+            self._payments[snapshot.id] = snapshot
+            self._idempotency_index[snapshot.idempotency_key] = snapshot.id
+            self._booking_index[snapshot.booking_id] = snapshot.id
 
     def get_by_idempotency_key(self, idempotency_key: str) -> PaymentRecord | None:
         with self._lock:
-            value = self._values.get(idempotency_key)
+            payment_id = self._idempotency_index.get(idempotency_key)
+            if payment_id is None:
+                return None
+            value = self._payments.get(payment_id)
             return deepcopy(value) if value is not None else None
 
 
