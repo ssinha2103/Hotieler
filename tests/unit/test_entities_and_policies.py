@@ -11,6 +11,7 @@ from hotieler.domain.entities import (
     CancellationRecord,
     OwnerAccount,
     PaymentRecord,
+    Property,
     RoomType,
 )
 from hotieler.domain.enums import (
@@ -85,6 +86,72 @@ def confirmed_cancelled_booking(
     return value
 
 
+def room_type(**overrides: Any) -> RoomType:
+    values: dict[str, Any] = {
+        "id": UUID(int=20),
+        "property_id": UUID(int=21),
+        "name": " Deluxe ",
+        "total_units": 3,
+        "guests_per_unit": 2,
+        "nightly_rate": Money(Decimal("1500")),
+        "amenities": frozenset({" WiFi ", " ", "POOL"}),
+    }
+    values.update(overrides)
+    return RoomType(**values)
+
+
+def property_entity(**overrides: Any) -> Property:
+    property_id = overrides.get("id", UUID(int=21))
+    values: dict[str, Any] = {
+        "id": property_id,
+        "owner_id": UUID(int=22),
+        "name": " Forest House ",
+        "city": " Bengaluru ",
+        "locality": " Indiranagar ",
+        "address": " 1 Residency Road ",
+        "star_rating": Decimal("4.5"),
+        "amenities": frozenset({" Parking ", "WIFI"}),
+        "room_types": (room_type(property_id=property_id),),
+        "created_at": NOW,
+    }
+    values.update(overrides)
+    return Property(**values)
+
+
+def test_owner_normalizes_text_and_email() -> None:
+    owner = OwnerAccount(
+        id=UUID(int=1),
+        name=" Forest Hospitality ",
+        contact_email=" OWNER@Example.COM ",
+        created_at=NOW,
+    )
+
+    assert owner.name == "Forest Hospitality"
+    assert owner.contact_email == "owner@example.com"
+    assert owner.created_at == NOW
+
+
+def test_owner_rejects_blank_name() -> None:
+    with pytest.raises(DomainValidationError, match="Owner name cannot be blank"):
+        OwnerAccount(
+            id=UUID(int=1),
+            name="  ",
+            contact_email="owner@example.com",
+            created_at=NOW,
+        )
+
+
+@pytest.mark.parametrize("email", ["owner.example.com", "@example.com", "owner@"])
+def test_owner_rejects_malformed_email(email: str) -> None:
+    with pytest.raises(DomainValidationError, match="Contact email must be valid"):
+        OwnerAccount(
+            id=UUID(int=1),
+            name="Forest Hospitality",
+            contact_email=email,
+            created_at=NOW,
+        )
+
+
 def test_room_type_calculates_ceiling_room_units() -> None:
     room = RoomType(
         id=UUID(int=1),
@@ -100,6 +167,71 @@ def test_room_type_calculates_ceiling_room_units() -> None:
     assert room.units_for(2) == 1
     assert room.units_for(3) == 2
     assert room.amenities == frozenset({"wifi", "pool"})
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "message"),
+    [
+        ("total_units", 0, "at least one unit"),
+        ("guests_per_unit", 0, "capacity must be greater than zero"),
+    ],
+)
+def test_room_type_rejects_non_positive_inventory_configuration(
+    field_name: str,
+    value: int,
+    message: str,
+) -> None:
+    with pytest.raises(DomainValidationError, match=message):
+        room_type(**{field_name: value})
+
+
+def test_room_type_rejects_non_positive_guest_request() -> None:
+    room = room_type()
+
+    with pytest.raises(DomainValidationError, match="Guest count must be greater than zero"):
+        room.units_for(0)
+
+
+def test_property_normalizes_fields_and_finds_its_room_type() -> None:
+    value = property_entity(star_rating="4.5")
+
+    assert value.name == "Forest House"
+    assert value.city == "Bengaluru"
+    assert value.locality == "Indiranagar"
+    assert value.address == "1 Residency Road"
+    assert value.star_rating == Decimal("4.5")
+    assert value.amenities == frozenset({"parking", "wifi"})
+    assert value.find_room_type(UUID(int=20)) == value.room_types[0]
+    assert value.find_room_type(UUID(int=999)) is None
+
+
+def test_property_rejects_non_numeric_star_rating() -> None:
+    with pytest.raises(DomainValidationError, match="Star rating must be numeric"):
+        property_entity(star_rating="not-a-rating")
+
+
+@pytest.mark.parametrize("rating", [Decimal("NaN"), Decimal("0.9"), Decimal("5.1")])
+def test_property_rejects_non_finite_or_out_of_range_star_rating(rating: Decimal) -> None:
+    with pytest.raises(DomainValidationError, match="Star rating must be between 1 and 5"):
+        property_entity(star_rating=rating)
+
+
+def test_property_requires_at_least_one_room_type() -> None:
+    with pytest.raises(DomainValidationError, match="at least one room type"):
+        property_entity(room_types=())
+
+
+def test_property_rejects_room_type_owned_by_another_property() -> None:
+    with pytest.raises(DomainValidationError, match="must belong to its property"):
+        property_entity(room_types=(room_type(property_id=UUID(int=999)),))
+
+
+def test_property_rejects_duplicate_room_type_identifiers() -> None:
+    duplicate_id = UUID(int=20)
+    with pytest.raises(DomainValidationError, match="identifiers must be unique"):
+        property_entity(
+            room_types=(room_type(id=duplicate_id), room_type(id=duplicate_id, name="Suite"))
+        )
 
 
 @pytest.mark.parametrize(
@@ -121,6 +253,67 @@ def test_booking_direct_construction_requires_booking_status_enum() -> None:
 
     with pytest.raises(DomainValidationError, match="status must be a BookingStatus value"):
         replace(value, status=cast(BookingStatus, "BOGUS"))
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "message"),
+    [
+        ("guest_count", 0, "Guest count must be greater than zero"),
+        ("required_units", 0, "Required room units must be greater than zero"),
+    ],
+)
+def test_booking_rejects_non_positive_capacity_snapshot(
+    field_name: str,
+    value: int,
+    message: str,
+) -> None:
+    with pytest.raises(DomainValidationError, match=message):
+        replace(booking(), **{field_name: value})
+
+
+def test_booking_rejects_update_timestamp_before_creation() -> None:
+    with pytest.raises(DomainValidationError, match="updated_at cannot be earlier than created_at"):
+        replace(booking(), updated_at=NOW - timedelta(microseconds=1))
+
+
+def test_booking_rejects_malformed_cancellation_record() -> None:
+    with pytest.raises(DomainValidationError, match="cancellation must be a CancellationRecord"):
+        replace(booking(), cancellation=cast(CancellationRecord, "not-a-record"))
+
+
+@pytest.mark.parametrize("status", [BookingStatus.CONFIRMED, BookingStatus.PAYMENT_FAILED])
+def test_processed_booking_reconstruction_requires_payment_identifier(
+    status: BookingStatus,
+) -> None:
+    with pytest.raises(DomainValidationError, match="requires a payment identifier"):
+        replace(booking(), status=status)
+
+
+def test_pending_booking_reconstruction_rejects_payment_identifier() -> None:
+    with pytest.raises(DomainValidationError, match="pending booking cannot have"):
+        replace(booking(), payment_id=UUID(int=4))
+
+
+def test_cancelled_booking_reconstruction_requires_cancellation_details() -> None:
+    with pytest.raises(DomainValidationError, match="requires cancellation details"):
+        replace(booking(), status=BookingStatus.CANCELLED)
+
+
+def test_non_cancelled_booking_reconstruction_rejects_cancellation_details() -> None:
+    cancellation = CancellationRecord(
+        cancelled_at=NOW,
+        refund_amount=Money.zero(),
+        refund_percentage=Decimal("0"),
+        refund_status=RefundStatus.NOT_REQUIRED,
+    )
+
+    with pytest.raises(DomainValidationError, match="Only a cancelled booking"):
+        replace(
+            booking(),
+            status=BookingStatus.CONFIRMED,
+            payment_id=UUID(int=4),
+            cancellation=cancellation,
+        )
 
 
 def test_cancellation_record_requires_refund_status_enum() -> None:
@@ -155,6 +348,61 @@ def test_payment_record_requires_enum_instances(
         match=rf"{field_name} must be a {enum_name} value",
     ):
         payment_record(**{field_name: invalid_value})
+
+
+@pytest.mark.parametrize(
+    ("outcome", "payment_status", "booking_status"),
+    [
+        (MockPaymentOutcome.APPROVED, PaymentStatus.APPROVED, BookingStatus.CONFIRMED),
+        (
+            MockPaymentOutcome.REJECTED,
+            PaymentStatus.REJECTED,
+            BookingStatus.PAYMENT_FAILED,
+        ),
+    ],
+)
+def test_payment_record_accepts_consistent_outcome_and_normalizes_references(
+    outcome: MockPaymentOutcome,
+    payment_status: PaymentStatus,
+    booking_status: BookingStatus,
+) -> None:
+    record = payment_record(
+        mock_outcome=outcome,
+        status=payment_status,
+        booking_status_after=booking_status,
+        idempotency_key=" payment-key ",
+        fingerprint=" payment-fingerprint ",
+        provider_reference=" provider-10 ",
+    )
+
+    assert record.idempotency_key == "payment-key"
+    assert record.fingerprint == "payment-fingerprint"
+    assert record.provider_reference == "provider-10"
+    assert record.created_at == NOW
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"mock_outcome": MockPaymentOutcome.REJECTED},
+        {"booking_status_after": BookingStatus.PAYMENT_FAILED},
+    ],
+    ids=["payment-outcome-mismatch", "booking-status-mismatch"],
+)
+def test_payment_record_rejects_inconsistent_lifecycle_projection(
+    overrides: dict[str, Any],
+) -> None:
+    with pytest.raises(DomainValidationError, match="Payment outcome.*disagree"):
+        payment_record(**overrides)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["idempotency_key", "fingerprint", "provider_reference"],
+)
+def test_payment_record_rejects_blank_external_reference_fields(field_name: str) -> None:
+    with pytest.raises(DomainValidationError, match="cannot be blank"):
+        payment_record(**{field_name: "  "})
 
 
 def test_booking_owns_confirmation_and_failed_payment_transitions() -> None:
@@ -227,6 +475,21 @@ def test_booking_cancellation_is_repeat_safe_at_entity_boundary() -> None:
     assert not value.reserves_inventory
 
 
+def test_cancel_defensively_rejects_corrupted_cancelled_booking() -> None:
+    value = booking()
+    value.status = BookingStatus.CANCELLED
+    value.cancellation = None
+    cancellation = CancellationRecord(
+        cancelled_at=NOW,
+        refund_amount=Money.zero(),
+        refund_percentage=Decimal("0"),
+        refund_status=RefundStatus.NOT_REQUIRED,
+    )
+
+    with pytest.raises(InvalidBookingTransitionError):
+        value.cancel(cancellation)
+
+
 def test_reconstructed_cancelled_booking_with_refund_requires_payment_id() -> None:
     value = confirmed_cancelled_booking()
 
@@ -254,6 +517,24 @@ def test_reconstructed_cancellation_timestamp_must_equal_booking_update() -> Non
         replace(value, updated_at=NOW + timedelta(hours=1))
 
 
+def test_reconstructed_pending_cancellation_accepts_no_refund_without_payment() -> None:
+    value = booking()
+    value.cancel(
+        CancellationRecord(
+            cancelled_at=NOW,
+            refund_amount=Money.zero(),
+            refund_percentage=Decimal("0"),
+            refund_status=RefundStatus.NOT_REQUIRED,
+        )
+    )
+
+    reconstructed = replace(value)
+
+    assert reconstructed.status is BookingStatus.CANCELLED
+    assert reconstructed.payment_id is None
+    assert reconstructed.cancellation is not None
+
+
 @pytest.mark.parametrize(
     "percentage",
     [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")],
@@ -262,6 +543,29 @@ def test_cancellation_record_rejects_non_finite_refund_percentage(
     percentage: Decimal,
 ) -> None:
     with pytest.raises(DomainValidationError, match="percentage must be finite"):
+        CancellationRecord(
+            cancelled_at=NOW,
+            refund_amount=Money.zero(),
+            refund_percentage=percentage,
+            refund_status=RefundStatus.NOT_REQUIRED,
+        )
+
+
+def test_cancellation_record_rejects_non_numeric_refund_percentage() -> None:
+    with pytest.raises(DomainValidationError, match="Refund percentage must be numeric"):
+        CancellationRecord(
+            cancelled_at=NOW,
+            refund_amount=Money.zero(),
+            refund_percentage=cast(Decimal, "not-a-percentage"),
+            refund_status=RefundStatus.NOT_REQUIRED,
+        )
+
+
+@pytest.mark.parametrize("percentage", [Decimal("-0.01"), Decimal("100.01")])
+def test_cancellation_record_rejects_out_of_range_refund_percentage(
+    percentage: Decimal,
+) -> None:
+    with pytest.raises(DomainValidationError, match="percentage must be between 0 and 100"):
         CancellationRecord(
             cancelled_at=NOW,
             refund_amount=Money.zero(),

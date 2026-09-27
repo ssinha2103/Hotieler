@@ -41,6 +41,85 @@ esac
     return binary_directory
 
 
+def _fake_smoke_commands(tmp_path: Path) -> tuple[Path, Path]:
+    binary_directory = tmp_path / "smoke-bin"
+    binary_directory.mkdir()
+    seeded_state = tmp_path / "seeded"
+    docker = binary_directory / "docker"
+    docker.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+
+case "$*" in
+  "compose version" | "info" | compose*" config --quiet" | compose*" up --build --detach --remove-orphans api")
+    exit 0
+    ;;
+  compose*" ps --all --quiet api")
+    printf 'test-container-id\\n'
+    ;;
+  inspect*"NetworkSettings.Ports"*)
+    printf '49152\\n'
+    ;;
+  inspect*"State.Health"*)
+    printf 'healthy\\n'
+    ;;
+  inspect*"State.Status"*)
+    printf 'running\\n'
+    ;;
+  compose*" exec -T api python scripts/seed_local_data.py"*)
+    : >"${FAKE_SMOKE_STATE}"
+    ;;
+  compose*" exec -T api id -u")
+    printf '10001\\n'
+    ;;
+  "top test-container-id")
+    printf 'UID PID CMD\\n10001 42 /opt/venv/bin/uvicorn hotieler.main:app\\n'
+    ;;
+  compose*" logs --no-color api" | compose*" down --volumes --remove-orphans --rmi local")
+    exit 0
+    ;;
+  *)
+    printf 'unexpected docker invocation: %s\\n' "$*" >&2
+    exit 97
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+    curl = binary_directory / "curl"
+    curl.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+
+url="${!#}"
+case "$url" in
+  */health)
+    printf '{"status":"healthy"}'
+    ;;
+  */openapi.json)
+    printf '{"openapi":"3.1.0","paths":{"/api/v1/bookings":{}}}'
+    ;;
+  */api/v1/properties/search*)
+    if [[ -f "${FAKE_SMOKE_STATE}" ]]; then
+      printf '[{"property_name":"Northstar Bengaluru"}]'
+    else
+      printf '[]'
+    fi
+    ;;
+  *)
+    printf 'unexpected curl URL: %s\\n' "$url" >&2
+    exit 98
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    return binary_directory, seeded_state
+
+
 def _run_status(tmp_path: Path, **overrides: str) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PATH"] = f"{_fake_docker(tmp_path)}:{environment['PATH']}"
@@ -129,6 +208,31 @@ def test_smoke_launcher_rejects_oversized_timeout_without_bash_overflow(
 
     assert result.returncode == 1
     assert "HOTIELER_SMOKE_TIMEOUT_SECONDS must be an integer between 1 and 86400" in result.stderr
+
+
+def test_smoke_launcher_accepts_leading_zero_timeout_through_deadline_arithmetic(
+    tmp_path: Path,
+) -> None:
+    binary_directory, seeded_state = _fake_smoke_commands(tmp_path)
+    environment = os.environ.copy()
+    environment["PATH"] = f"{binary_directory}:{environment['PATH']}"
+    environment["FAKE_SMOKE_STATE"] = str(seeded_state)
+    environment["HOTIELER_SMOKE_TIMEOUT_SECONDS"] = "08"
+    environment["HOTIELER_SMOKE_PROJECT_NAME"] = "hotieler-smoke-unit"
+    environment["HOTIELER_SMOKE_LOG_FILE"] = str(tmp_path / "smoke.log")
+
+    result = subprocess.run(
+        [str(SMOKE_SCRIPT)],
+        cwd=PROJECT_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Docker smoke gate passed" in result.stdout
+    assert seeded_state.exists()
 
 
 def test_compose_publishes_the_api_on_loopback_only() -> None:
