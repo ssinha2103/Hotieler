@@ -21,6 +21,7 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+*.zip
 *.swp
 
 # Local environment overrides
